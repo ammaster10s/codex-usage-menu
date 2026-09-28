@@ -22,6 +22,8 @@ The usage data comes from the signed-in Codex CLI's documented [`account/rateLim
 - Xcode Command Line Tools (for `swiftc`, `iconutil`, and `codesign`). Run `xcode-select --install` if they are missing.
 - A recent [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) installed and signed in with a **ChatGPT-backed account**. API-key-only authentication does not supply the ChatGPT allowance this app displays.
 
+Verified on macOS 27.0 (Apple silicon): the source build, code signature, Codex allowance lookup, preview UI, refresh control, and Auto Press key picker work. Keyboard injection was not part of that check because it requires the user's Accessibility grant.
+
 ## Build and run
 
 ```sh
