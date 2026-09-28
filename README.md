@@ -8,7 +8,7 @@ It is an independent community project, not an official OpenAI app. It does not 
 
 ## What it does
 
-- Shows the lowest remaining percentage among the Codex quota windows reported for your account in the menu bar (`Cx +95%`, for example).
+- Shows the lowest remaining percentage among the Codex quota windows reported for your account beside a gauge icon in the menu bar (`95%`, for example).
 - Shows each available window's usage and time until reset when you click the menu bar item.
 - Refreshes on launch, every two minutes, and when you click the refresh button.
 - Lets you auto-press a chosen key after a delay, at a chosen interval, for a fixed number of repeats or indefinitely. Press **⌘⌥S** or reopen the popover to stop.
@@ -22,7 +22,7 @@ The usage data comes from the signed-in Codex CLI's documented [`account/rateLim
 - Xcode Command Line Tools (for `swiftc`, `iconutil`, and `codesign`). Run `xcode-select --install` if they are missing.
 - A recent [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) installed and signed in with a **ChatGPT-backed account**. API-key-only authentication does not supply the ChatGPT allowance this app displays.
 
-Verified on macOS 27.0 (Apple silicon): the source build, code signature, Codex allowance lookup, preview UI, refresh control, and Auto Press key picker work. Keyboard injection was not part of that check because it requires the user's Accessibility grant.
+Verified on macOS 27.0 (Apple silicon): the source build, code signature, Codex allowance lookup, preview UI, refresh control, and Auto Press key picker work. A crowded menu bar or third-party menu bar manager can still keep the status item off screen. Keyboard injection was not part of that check because it requires the user's Accessibility grant.
 
 ## Build and run
 
@@ -33,7 +33,7 @@ cd codex-usage-menu
 open "build/Codex Usage.app"
 ```
 
-The build creates an ad-hoc signed app locally; no Xcode project or third-party package is required. This repository distributes source, not a notarized binary. There is no Dock icon: look for the purple `Cx +…%` item in the macOS menu bar. Click it to open the popover. Use its power button to quit.
+The build creates an ad-hoc signed app locally; no Xcode project or third-party package is required. This repository distributes source, not a notarized binary. There is no Dock icon: look for the gauge icon and remaining percentage in the macOS menu bar. Click it to open the popover. Use its power button to quit.
 
 You can check usage from Terminal without opening the UI:
 
@@ -55,7 +55,7 @@ Use Auto Press only in applications and workflows where automated input is appro
 | --- | --- |
 | `Codex CLI was not found` | Confirm `codex --version` works in Terminal. The app searches `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, and its `PATH`. |
 | No allowance appears | Run `codex` and sign in with ChatGPT, then use the popover's refresh button. The CLI account must have a Codex allowance. |
-| Menu bar item is missing | Check for `Cx` among your menu bar items and make sure another copy is not already running. |
+| Menu bar item is missing | Check **System Settings → Menu Bar → Allow in the Menu Bar → Codex Usage**. On a notched Mac, check the menu bar's overflow control when space is tight. If you use a menu bar manager, place Codex Usage in its Visible section. Thaw 3.0.0-alpha.7 has a [reported helper crash](https://github.com/thaw-app/Thaw/issues/1194) on macOS 27; update Thaw when a fix is released. Make sure another copy of Codex Usage is not already running. |
 | Auto Press does not start | Grant Accessibility to **Codex Usage**, then reopen the popover and try again. If you rebuild or move the app, macOS may ask you to grant access again. |
 | Stop shortcut does not work | Reopen the popover and click **Stop pressing**. Check macOS Input Monitoring permissions if the global shortcut is unavailable. |
 

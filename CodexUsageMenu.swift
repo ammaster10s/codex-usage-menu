@@ -93,7 +93,7 @@ private enum UsageFetcher {
             "params": ["clientInfo": [
                 "name": "codex_usage_menu",
                 "title": "Codex Usage Menu",
-                "version": "1.0.0"
+                "version": "1.0.1"
             ]]
         ])
         _ = try response(for: 1)
@@ -487,13 +487,24 @@ private struct AutoPressCard: View {
 }
 
 private final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    private let statusItem: NSStatusItem
     private let model = UsageModel()
     private let autoPress = AutoPressController()
     private let popover = NSPopover()
     private var timer: Timer?
     private var previewWindow: NSWindow?
     private var phaseCancellable: AnyCancellable?
+
+    override init() {
+        let name = "CodexUsage"
+        let positionKey = "NSStatusItem Preferred Position \(name)"
+        if UserDefaults.standard.object(forKey: positionKey) == nil {
+            UserDefaults.standard.set(0, forKey: positionKey)
+        }
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.autosaveName = name
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let isPreview = CommandLine.arguments.contains("--preview")
@@ -512,9 +523,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         if let button = statusItem.button {
             button.target = self
             button.action = #selector(togglePopover(_:))
-            button.wantsLayer = true
-            button.layer?.backgroundColor = NSColor(red: 0.32, green: 0.27, blue: 0.80, alpha: 1).cgColor
-            button.layer?.cornerRadius = 11
+            button.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+            button.setAccessibilityIdentifier("CodexUsageMenu.statusItem")
         }
         renderStatus()
         autoPress.installStopHotkey()
@@ -583,11 +593,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func renderStatus() {
         let remaining = model.error == nil ? model.snapshot?.remainingPercent : nil
-        let title = "Cx " + (remaining.map { "+\($0)%" } ?? "—")
-        statusItem.button?.attributedTitle = NSAttributedString(string: title, attributes: [
-            .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .bold),
-            .foregroundColor: NSColor.white
-        ])
+        statusItem.button?.title = remaining.map { "\($0)%" } ?? "—"
         statusItem.button?.toolTip = remaining.map { "Codex: \($0)% remaining" }
             ?? "Codex allowance unavailable"
         statusItem.button?.image = BrandIcon.status(active: autoPress.phase != .ready)
@@ -602,6 +608,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
 @main
 private enum CodexUsageMenu {
+    private static let delegate = AppDelegate()
+
     static func main() {
         signal(SIGPIPE, SIG_IGN)
         if CommandLine.arguments.contains("--check") {
@@ -617,7 +625,6 @@ private enum CodexUsageMenu {
             return
         }
         let app = NSApplication.shared
-        let delegate = AppDelegate()
         app.delegate = delegate
         app.run()
     }
