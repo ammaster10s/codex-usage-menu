@@ -93,7 +93,7 @@ private enum UsageFetcher {
             "params": ["clientInfo": [
                 "name": "codex_usage_menu",
                 "title": "Codex Usage Menu",
-                "version": "1.0.1"
+                "version": "1.2.0"
             ]]
         ])
         _ = try response(for: 1)
@@ -265,223 +265,370 @@ private struct WindowRow: View {
     }
 }
 
+private final class TokenUsageModel: ObservableObject {
+    @Published var snapshot: DailyTokenUsageSnapshot?
+    @Published var error: String?
+    @Published var refreshing = false
+}
+
+private enum PopoverPage: String, CaseIterable {
+    case allowance = "Allowance"
+    case tokens = "Daily tokens"
+    case input = "Auto input"
+}
+
 private struct UsagePopover: View {
     @ObservedObject var model: UsageModel
+    @ObservedObject var tokens: TokenUsageModel
+    @ObservedObject var autoClick: AutoClickController
     @ObservedObject var autoPress: AutoPressController
     let refresh: () -> Void
+    let startClicking: () -> Void
     let startPressing: () -> Void
     let quit: () -> Void
+    @State private var page: PopoverPage = .allowance
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 19) {
-            HStack(spacing: 11) {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
                 Image(nsImage: NSApp.applicationIconImage)
                     .resizable()
-                    .interpolation(.high)
-                    .frame(width: 32, height: 32)
-                Text("Codex")
-                    .font(.system(size: 21, weight: .bold))
+                    .frame(width: 26, height: 26)
+                Text("Codex Usage")
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(.white)
                 Spacer()
                 if let snapshot = model.snapshot {
                     Text(model.error == nil
-                         ? "\(snapshot.remainingPercent)% to spare"
-                         : "Last known: \(snapshot.remainingPercent)%")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Palette.highlight)
+                         ? "\(snapshot.remainingPercent)% left"
+                         : "\(snapshot.remainingPercent)% last known")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Palette.secondary)
                         .monospacedDigit()
                 }
             }
 
+            Picker("View", selection: $page) {
+                ForEach(PopoverPage.allCases, id: \.self) { item in
+                    Text(item.rawValue).tag(item)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .accessibilityLabel("App section")
+
+            switch page {
+            case .allowance:
+                allowance
+            case .tokens:
+                DailyTokensPanel(model: tokens)
+            case .input:
+                AutoInputPanel(autoClick: autoClick, autoPress: autoPress,
+                               startClicking: startClicking, startPressing: startPressing)
+            }
+
+            HStack(spacing: 12) {
+                Text(updatedText)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.secondary)
+                Spacer()
+                if model.refreshing || tokens.refreshing {
+                    ProgressView().controlSize(.small)
+                        .frame(width: 24, height: 24)
+                }
+                Button(action: refresh) {
+                    Image(systemName: "arrow.clockwise")
+                        .frame(width: 24, height: 24)
+                }
+                .disabled(page == .tokens ? tokens.refreshing : model.refreshing)
+                .help("Refresh usage and daily tokens")
+                .accessibilityLabel("Refresh usage")
+                Button(action: quit) {
+                    Image(systemName: "power").frame(width: 24, height: 24)
+                }
+                .help("Quit Codex Usage")
+                .accessibilityLabel("Quit Codex Usage")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Palette.secondary)
+        }
+        .padding(18)
+        .frame(width: 390)
+        .background(Palette.background)
+    }
+
+    private var updatedText: String {
+        let date = page == .tokens ? tokens.snapshot?.checkedAt : model.snapshot?.checkedAt
+        return date.map { "Updated " + $0.formatted(date: .omitted, time: .shortened) } ?? "Codex usage"
+    }
+
+    @ViewBuilder private var allowance: some View {
+        if let error = model.error {
+            Text("Refresh failed: \(error)")
+                .font(.system(size: 12))
+                .foregroundStyle(Color(red: 1, green: 0.75, blue: 0.72))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if let snapshot = model.snapshot {
+            TimelineView(.periodic(from: .now, by: 60)) { timeline in
+                VStack(spacing: 18) {
+                    ForEach(snapshot.windows, id: \.name) { window in
+                        WindowRow(window: window, now: timeline.date)
+                    }
+                }
+            }
+            Text("Your signed-in Codex account. Daily token records are in the next tab.")
+                .font(.system(size: 11))
+                .foregroundStyle(Palette.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if model.error == nil {
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text("Checking your allowance…")
+            }
+            .font(.system(size: 12))
+            .foregroundStyle(Palette.secondary)
+        }
+    }
+}
+
+private struct DailyTokensPanel: View {
+    @ObservedObject var model: TokenUsageModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
             if let error = model.error {
-                Text("Refresh failed: \(error)")
+                Text("Token refresh failed: \(error)")
                     .font(.system(size: 12))
                     .foregroundStyle(Color(red: 1, green: 0.75, blue: 0.72))
                     .fixedSize(horizontal: false, vertical: true)
             }
-
             if let snapshot = model.snapshot {
-                TimelineView(.periodic(from: .now, by: 60)) { timeline in
-                    VStack(spacing: 20) {
-                        ForEach(snapshot.windows, id: \.name) { window in
-                            WindowRow(window: window, now: timeline.date)
-                        }
+                let today = snapshot.days.first { $0.date == todayKey }
+                HStack {
+                    Text(model.error == nil ? "Recorded today" : "Last recorded").font(.system(size: 14, weight: .semibold))
+                    Spacer()
+                    Text("\((today?.totalTokens ?? 0).formatted()) tokens")
+                        .font(.system(size: 15, weight: .semibold))
+                        .monospacedDigit()
+                }
+                .foregroundStyle(.white)
+                Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
+                    GridRow {
+                        metric("Input", today?.inputTokens ?? 0)
+                        metric("Output", today?.outputTokens ?? 0)
+                    }
+                    GridRow {
+                        metric("Cached input", today?.cachedInputTokens ?? 0)
+                        metric("Reasoning output", today?.reasoningOutputTokens ?? 0)
                     }
                 }
-                .padding(18)
-                .background(Palette.card, in: RoundedRectangle(cornerRadius: 16))
+                Text("Cached and reasoning tokens are included in input and output.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !snapshot.days.isEmpty {
+                    Divider().overlay(Palette.track)
+                    Text("Recent days").font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                    ForEach(Array(snapshot.days.prefix(7)), id: \.date) { day in
+                        HStack {
+                            Text(day.date)
+                            Spacer()
+                            Text(day.totalTokens.formatted()).monospacedDigit()
+                        }
+                        .font(.system(size: 12))
+                        .foregroundStyle(Palette.secondary)
+                    }
+                } else {
+                    Text("No token records yet. Use Codex on this Mac, then refresh.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Palette.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Text(snapshot.coverageSummary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(snapshot.hasCoverageWarning
+                                     ? Color(red: 1, green: 0.75, blue: 0.72) : Palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Open daily log") {
+                    NSWorkspace.shared.activateFileViewerSelecting([snapshot.logURL])
+                }
+                .font(.system(size: 11, weight: .medium))
+                .buttonStyle(.plain)
+                .foregroundStyle(Palette.highlight)
             } else if model.error == nil {
                 HStack(spacing: 10) {
                     ProgressView().controlSize(.small)
-                    Text("Checking your allowance…")
+                    Text("Indexing local Codex token records…")
                 }
-                .font(.system(size: 14))
+                .font(.system(size: 12))
                 .foregroundStyle(Palette.secondary)
-                .frame(maxWidth: .infinity, minHeight: 88)
-                .background(Palette.card, in: RoundedRectangle(cornerRadius: 16))
             }
-
-            AutoPressCard(autoPress: autoPress, startPressing: startPressing)
-
-            HStack {
-                if let snapshot = model.snapshot {
-                    Text("Updated \(snapshot.checkedAt.formatted(date: .omitted, time: .shortened))")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Palette.secondary)
-                } else {
-                    Text("Codex allowance")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Palette.secondary)
-                }
-                Spacer()
-                if model.refreshing {
-                    ProgressView().controlSize(.small)
-                        .frame(width: 28, height: 28)
-                } else {
-                    Button(action: refresh) {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 15, weight: .semibold))
-                            .frame(width: 28, height: 28)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Palette.secondary)
-                    .help("Refresh now")
-                    .accessibilityLabel("Refresh now")
-                }
-                Button(action: quit) {
-                    Image(systemName: "power")
-                        .font(.system(size: 15, weight: .semibold))
-                        .frame(width: 28, height: 28)
-                }
-                .buttonStyle(.plain)
+            Text("Local Codex sessions on this Mac. ChatGPT chats, other devices, and API billing are not included.")
+                .font(.system(size: 11))
                 .foregroundStyle(Palette.secondary)
-                .help("Quit Codex Usage")
-                .accessibilityLabel("Quit Codex Usage")
-            }
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(20)
-        .frame(width: 390)
-        .background(Palette.background)
+    }
+
+    private var todayKey: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = .autoupdatingCurrent
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: Date())
+    }
+
+    private func metric(_ label: String, _ count: Int64) -> some View {
+        HStack(spacing: 8) {
+            Text(label).foregroundStyle(Palette.secondary)
+            Spacer(minLength: 4)
+            Text(count.formatted()).foregroundStyle(.white).monospacedDigit()
+        }
+        .font(.system(size: 11))
     }
 }
 
-private struct AutoPressCard: View {
+private enum AutoInputMode: String, CaseIterable {
+    case mouse = "Mouse"
+    case keyboard = "Keyboard"
+}
+
+private struct AutoInputPanel: View {
+    @ObservedObject var autoClick: AutoClickController
     @ObservedObject var autoPress: AutoPressController
+    let startClicking: () -> Void
     let startPressing: () -> Void
+    @State private var mode: AutoInputMode = .mouse
+    @State private var showOptions = false
+
+    private var isMouse: Bool { mode == .mouse }
+    private var isReady: Bool { autoClick.phase == .ready && autoPress.phase == .ready }
+    private var hasPermission: Bool { isMouse ? autoClick.permissionGranted : autoPress.permissionGranted }
+    private var interval: Binding<String> { isMouse ? $autoClick.intervalText : $autoPress.intervalText }
+    private var repeats: Binding<String> { isMouse ? $autoClick.repeatText : $autoPress.repeatText }
+    private var delay: Binding<String> { isMouse ? $autoClick.delayText : $autoPress.delayText }
+    private var status: String { isMouse ? autoClick.statusText : autoPress.statusText }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 9) {
-                Image(systemName: "keyboard.fill")
-                    .font(.system(size: 16))
-                    .foregroundStyle(Palette.highlight)
-                Text("Auto Press")
-                    .font(.system(size: 17, weight: .bold))
-                    .foregroundStyle(.white)
-                Spacer()
-                if autoPress.phase != .ready {
-                    Text(autoPress.phase == .waiting ? "STARTING" : "RUNNING")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Palette.accent, in: Capsule())
+            Picker("Input type", selection: $mode) {
+                ForEach(AutoInputMode.allCases, id: \.self) { item in
+                    Text(item.rawValue).tag(item)
                 }
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .disabled(!isReady)
+            .accessibilityLabel("Automation type")
 
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
-                    fieldLabel("Key")
+                    fieldLabel(isMouse ? "Mouse button" : "Key")
                     Menu {
-                        ForEach(keyOptions, id: \.name) { option in
-                            Button(option.name) { autoPress.selectedKeyName = option.name }
+                        if isMouse {
+                            ForEach(MouseClickButton.allCases, id: \.self) { button in
+                                Button(button.rawValue) { autoClick.selectedButton = button }
+                            }
+                        } else {
+                            ForEach(keyOptions, id: \.name) { key in
+                                Button(key.name) { autoPress.selectedKeyName = key.name }
+                            }
                         }
                     } label: {
-                        HStack {
-                            Text(autoPress.selectedKeyName)
-                            Spacer()
-                            Image(systemName: "chevron.up.chevron.down")
-                                .font(.system(size: 10, weight: .bold))
-                        }
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 10)
-                        .frame(height: 31)
-                        .background(Palette.track, in: RoundedRectangle(cornerRadius: 8))
+                        Text(isMouse ? autoClick.selectedButton.rawValue : autoPress.selectedKeyName)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .menuStyle(.borderlessButton)
-                    .disabled(autoPress.phase != .ready)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .frame(height: 30)
+                    .background(Palette.track, in: RoundedRectangle(cornerRadius: 8))
+                    .disabled(!isReady)
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     fieldLabel("Interval (sec)")
-                    numberField("Interval seconds", text: $autoPress.intervalText)
+                    numberField("Interval seconds", text: interval)
                 }
             }
 
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 6) {
-                    fieldLabel("Repeats · 0 = ∞")
-                    numberField("Repeat count", text: $autoPress.repeatText)
+            DisclosureGroup("Delay and repeat count", isExpanded: $showOptions) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        fieldLabel("Repeats · 0 = unlimited")
+                        numberField("Repeat count", text: repeats)
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        fieldLabel("Start delay (sec)")
+                        numberField("Start delay seconds", text: delay)
+                    }
                 }
-                VStack(alignment: .leading, spacing: 6) {
-                    fieldLabel("Start delay (sec)")
-                    numberField("Start delay seconds", text: $autoPress.delayText)
-                }
+                .padding(.top, 8)
             }
+            .font(.system(size: 12))
+            .foregroundStyle(Palette.secondary)
 
-            Button(action: autoPress.phase == .ready ? startPressing : autoPress.stop) {
-                HStack(spacing: 8) {
-                    Image(systemName: autoPress.phase == .ready ? "play.fill" : "stop.fill")
-                    Text(autoPress.phase == .ready ? "Start pressing" : "Stop pressing")
-                }
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity, minHeight: 34)
-                .background(autoPress.phase == .ready ? Palette.accent : Color(red: 0.64, green: 0.29, blue: 0.39),
-                            in: RoundedRectangle(cornerRadius: 9))
+            Button(action: performAction) {
+                Label(isReady ? (isMouse ? "Start clicking" : "Start pressing") : "Stop",
+                      systemImage: isReady ? "play.fill" : "stop.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, minHeight: 32)
+                    .background(isReady ? Palette.accent : Color(red: 0.64, green: 0.29, blue: 0.39),
+                                in: RoundedRectangle(cornerRadius: 8))
             }
             .buttonStyle(.plain)
 
-            HStack(alignment: .top, spacing: 8) {
-                Text(autoPress.statusText)
+            if !status.hasPrefix("Ready.") {
+                Text(status)
                     .font(.system(size: 12))
                     .foregroundStyle(Palette.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-                if autoPress.pressedCount > 0 {
-                    Text("\(autoPress.pressedCount) sent")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Palette.secondary)
-                        .monospacedDigit()
-                }
             }
+            Text(isMouse
+                 ? "Clicks at the pointer. ⌘⌥S or reopening this menu stops."
+                 : "Presses in the focused app. ⌘⌥S or reopening this menu stops.")
+                .font(.system(size: 11))
+                .foregroundStyle(Palette.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
-            if !autoPress.permissionGranted {
-                Button("Enable Accessibility") { autoPress.openAccessibilitySettings() }
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Palette.highlight)
-                    .buttonStyle(.plain)
+            if !hasPermission {
+                Button("Enable Accessibility") {
+                    if isMouse { autoClick.openAccessibilitySettings() }
+                    else { autoPress.openAccessibilitySettings() }
+                }
+                .font(.system(size: 12, weight: .medium))
+                .buttonStyle(.plain)
+                .foregroundStyle(Palette.highlight)
             }
         }
-        .padding(18)
-        .background(Palette.card, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func performAction() {
+        if isReady {
+            if isMouse { startClicking() } else { startPressing() }
+        } else {
+            autoClick.stop()
+            autoPress.stop()
+        }
     }
 
     private func fieldLabel(_ title: String) -> some View {
-        Text(title)
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(Palette.secondary)
+        Text(title).font(.system(size: 11)).foregroundStyle(Palette.secondary)
     }
 
     private func numberField(_ label: String, text: Binding<String>) -> some View {
         TextField(label, text: text)
             .textFieldStyle(.plain)
-            .font(.system(size: 13, weight: .medium))
+            .font(.system(size: 13))
             .foregroundStyle(.white)
             .padding(.horizontal, 10)
-            .frame(height: 31)
+            .frame(height: 30)
             .background(Palette.track, in: RoundedRectangle(cornerRadius: 8))
-            .disabled(autoPress.phase != .ready)
+            .disabled(!isReady)
             .accessibilityLabel(label)
     }
 }
@@ -489,11 +636,13 @@ private struct AutoPressCard: View {
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     private let statusItem: NSStatusItem
     private let model = UsageModel()
+    private let tokens = TokenUsageModel()
+    private let autoClick = AutoClickController()
     private let autoPress = AutoPressController()
     private let popover = NSPopover()
     private var timer: Timer?
     private var previewWindow: NSWindow?
-    private var phaseCancellable: AnyCancellable?
+    private var phaseCancellables: [AnyCancellable] = []
 
     override init() {
         let name = "CodexUsage"
@@ -514,12 +663,17 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentSize = NSSize(width: 390, height: 230)
         let content = UsagePopover(
             model: model,
+            tokens: tokens,
+            autoClick: autoClick,
             autoPress: autoPress,
             refresh: { [weak self] in self?.refresh() },
+            startClicking: { [weak self] in self?.startClicking() },
             startPressing: { [weak self] in self?.startPressing() },
             quit: { NSApp.terminate(nil) }
         )
-        popover.contentViewController = NSHostingController(rootView: content)
+        let hosting = NSHostingController(rootView: content)
+        hosting.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = hosting
         if let button = statusItem.button {
             button.target = self
             button.action = #selector(togglePopover(_:))
@@ -527,17 +681,23 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             button.setAccessibilityIdentifier("CodexUsageMenu.statusItem")
         }
         renderStatus()
+        autoClick.installStopHotkey()
         autoPress.installStopHotkey()
-        phaseCancellable = autoPress.$phase.sink { [weak self] _ in
-            DispatchQueue.main.async { self?.renderStatus() }
-        }
+        phaseCancellables = [
+            autoClick.$phase.sink { [weak self] _ in
+                DispatchQueue.main.async { self?.renderStatus() }
+            },
+            autoPress.$phase.sink { [weak self] _ in
+                DispatchQueue.main.async { self?.renderStatus() }
+            }
+        ]
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
             self?.refresh()
         }
         if isPreview {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 390, height: 550),
+                contentRect: NSRect(x: 0, y: 0, width: 390, height: 680),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false
@@ -555,23 +715,54 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(sender)
         } else if let button = statusItem.button {
+            autoClick.stop()
+            autoPress.stop()
+            autoClick.refreshPermission()
             autoPress.refreshPermission()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        autoClick.stop()
+        autoClick.removeStopHotkey()
         autoPress.stop()
         autoPress.removeStopHotkey()
     }
 
-    private func startPressing() {
-        if autoPress.start() {
+    private func startClicking() {
+        autoPress.stop()
+        if autoClick.start() {
             popover.performClose(nil)
         }
     }
 
+    private func startPressing() {
+        autoClick.stop()
+        if autoPress.start() { popover.performClose(nil) }
+    }
+
+    private func refreshTokens() {
+        guard !tokens.refreshing else { return }
+        tokens.refreshing = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let result = Result { try DailyTokenUsageReader.read() }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.tokens.refreshing = false
+                switch result {
+                case .success(let snapshot):
+                    self.tokens.snapshot = snapshot
+                    self.tokens.error = nil
+                case .failure(let error):
+                    self.tokens.error = error.localizedDescription
+                }
+            }
+        }
+    }
+
     private func refresh() {
+        refreshTokens()
         guard !model.refreshing else { return }
         model.refreshing = true
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -596,13 +787,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.title = remaining.map { "\($0)%" } ?? "—"
         statusItem.button?.toolTip = remaining.map { "Codex: \($0)% remaining" }
             ?? "Codex allowance unavailable"
-        statusItem.button?.image = BrandIcon.status(active: autoPress.phase != .ready)
+        statusItem.button?.image = BrandIcon.status(active: autoClick.phase != .ready || autoPress.phase != .ready)
         statusItem.button?.imagePosition = .imageLeading
-        let extraRows = max(0, (model.snapshot?.windows.count ?? 1) - 1)
-        popover.contentSize = NSSize(
-            width: 390,
-            height: 535 + CGFloat(extraRows * 78) + (model.error == nil ? 0 : 34)
-        )
     }
 }
 
@@ -612,6 +798,40 @@ private enum CodexUsageMenu {
 
     static func main() {
         signal(SIGPIPE, SIG_IGN)
+        if CommandLine.arguments.contains("--check-input") {
+            let failures = AutoClickController.selfCheck() + AutoPressController.selfCheck()
+            for failure in failures { fputs("\(failure)\n", stderr) }
+            guard failures.isEmpty else { exit(1) }
+            print("Mouse and keyboard checks passed (no input sent)")
+            return
+        }
+        if CommandLine.arguments.contains("--check-token-parser") {
+            let failures = DailyTokenUsageReader.selfCheck()
+            for failure in failures { fputs("\(failure)\n", stderr) }
+            guard failures.isEmpty else { exit(1) }
+            print("Daily token parser checks passed")
+            return
+        }
+        if CommandLine.arguments.contains("--check-tokens") {
+            do {
+                let snapshot = try DailyTokenUsageReader.read()
+                for day in snapshot.days.prefix(7) {
+                    print("\(day.date): \(day.totalTokens) tokens")
+                }
+                print(snapshot.coverageSummary)
+            } catch {
+                fputs("\(error.localizedDescription)\n", stderr)
+                exit(1)
+            }
+            return
+        }
+        if CommandLine.arguments.contains("--check-clicker") {
+            let failures = AutoClickController.selfCheck()
+            for failure in failures { fputs("\(failure)\n", stderr) }
+            guard failures.isEmpty else { exit(1) }
+            print("Mouse clicker checks passed (no clicks sent)")
+            return
+        }
         if CommandLine.arguments.contains("--check") {
             do {
                 let snapshot = try UsageFetcher.fetch()

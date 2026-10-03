@@ -2,27 +2,27 @@
 
 <img src="assets/icon.png" alt="Codex Usage Menu icon" width="96">
 
-A small, open-source macOS menu bar app that shows how much of your **Codex allowance remains** and includes an optional keyboard auto-presser in the same popover.
+A standalone macOS menu bar app for checking your **Codex allowance**, logging **daily local token usage**, and optionally automating mouse clicks or key presses.
 
-It is an independent community project, not an official OpenAI app. It does not show general ChatGPT chat usage or OpenAI API billing.
+This is an independent community project, not an official OpenAI app. It can run alongside iStat Menus and does not manage other menu bar icons.
 
 ## What it does
 
-- Shows the lowest remaining percentage among the Codex quota windows reported for your account beside a gauge icon in the menu bar (`95%`, for example).
-- Shows each available window's usage and time until reset when you click the menu bar item.
-- Refreshes on launch, every two minutes, and when you click the refresh button.
-- Lets you auto-press a chosen key after a delay, at a chosen interval, for a fixed number of repeats or indefinitely. Press **⌘⌥S** or reopen the popover to stop.
-- Saves your last valid auto-press settings in macOS `UserDefaults`.
+The existing gauge icon shows the lowest remaining percentage among the Codex allowance windows returned for your signed-in account. Click it for three compact tabs:
 
-The usage data comes from the signed-in Codex CLI's documented [`account/rateLimits/read` app-server method](https://learn.chatgpt.com/docs/app-server). The app starts `codex app-server` locally for each refresh; it does not read or store your login tokens.
+- **Allowance:** remaining usage and reset time for each available window.
+- **Daily tokens:** today's recorded input, output, cached-input, and reasoning-output counts, plus the last seven recorded days and a link to the local log.
+- **Auto input:** choose **Mouse** or **Keyboard**. Only the selected tool's controls appear; delay and repeat count are tucked into an expandable section.
+
+The app refreshes allowance and token records on launch, every two minutes, and when you click refresh. The clicker and keyboard presser share an activity indicator and never run together.
 
 ## Requirements
 
 - macOS 13 or newer.
-- Xcode Command Line Tools (for `swiftc`, `iconutil`, and `codesign`). Run `xcode-select --install` if they are missing.
-- A recent [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) installed and signed in with a **ChatGPT-backed account**. API-key-only authentication does not supply the ChatGPT allowance this app displays.
-
-Verified on macOS 27.0 (Apple silicon): the source build, code signature, Codex allowance lookup, preview UI, refresh control, and Auto Press key picker work. A crowded menu bar or third-party menu bar manager can still keep the status item off screen. Keyboard injection was not part of that check because it requires the user's Accessibility grant.
+- Xcode Command Line Tools for a source build (`swiftc`, `iconutil`, and `codesign`).
+- A recent [Codex CLI](https://learn.chatgpt.com/docs/codex/cli), signed in with a ChatGPT-backed account, for the allowance display. API-key-only authentication does not provide this account allowance.
+- Local Codex session records for the daily token counter.
+- Accessibility permission for optional mouse and keyboard automation.
 
 ## Build and run
 
@@ -33,42 +33,67 @@ cd codex-usage-menu
 open "build/Codex Usage.app"
 ```
 
-The build creates an ad-hoc signed app locally; no Xcode project or third-party package is required. This repository distributes source, not a notarized binary. There is no Dock icon: look for the gauge icon and remaining percentage in the macOS menu bar. Click it to open the popover. Use its power button to quit.
+The build creates an ad-hoc signed app without an Xcode project or third-party packages. This repository distributes source, not a notarized binary. For normal use on macOS 27, copy **Codex Usage.app** to `/Applications` and launch that copy. The regular app has no Dock icon.
 
-You can check usage from Terminal without opening the UI:
+For verification without posting mouse or keyboard input:
 
 ```sh
 "build/Codex Usage.app/Contents/MacOS/CodexUsageMenu" --check
+"build/Codex Usage.app/Contents/MacOS/CodexUsageMenu" --check-input
+"build/Codex Usage.app/Contents/MacOS/CodexUsageMenu" --check-token-parser
+"build/Codex Usage.app/Contents/MacOS/CodexUsageMenu" --check-tokens
 ```
 
-## Auto Press and macOS permissions
+`--check` reads the current allowance. `--check-input` validates automation settings and constructs events without sending them. `--check-token-parser` uses synthetic fixtures. `--check-tokens` reads your real local token records and saves the daily log.
 
-Auto Press is optional. Choose a key, set an interval of at least `0.02` seconds, set a repeat count (`0` means unlimited), and allow enough start delay to focus the target app. Click **Start pressing**. The menu bar icon gains an activity dot while a run is starting or active.
+## Daily token records
 
-macOS requires an **Accessibility** grant for keyboard injection. Click **Enable Accessibility** in the popover, then enable **Codex Usage** under **System Settings → Privacy & Security → Accessibility**. Return to the app and start again. The global stop shortcut may also require **Input Monitoring** access on some macOS configurations; the popover's **Stop pressing** button remains available.
+The counter reads numeric `token_count` events from local Codex JSONL records under `~/.codex/sessions` and `~/.codex/archived_sessions`, or those folders inside `CODEX_HOME` when set. It groups token increases by calendar day in your Mac's current time zone. Duplicate records, resumed sessions, archived copies, and copied fork history are reconciled before aggregation.
 
-Use Auto Press only in applications and workflows where automated input is appropriate. When repeat count is `0`, it continues until stopped or the app quits.
+**Coverage is local Codex records on this Mac.** This does not include ordinary ChatGPT conversations, other devices, sessions without token records, or account-wide API billing. The allowance percentage and token count measure different things; the app does not convert tokens into allowance percentages or dollar costs.
+
+Cached input is already included in input tokens, and reasoning output is already included in output tokens. They are displayed as breakdowns, not added again to the total. Missing or unreadable sources are reported. The app keeps the last known records if a source becomes unavailable.
+
+The local log and incremental index are saved in:
+
+```text
+~/Library/Application Support/Codex Usage/daily-token-usage.json
+```
+
+Use **Open daily log** in the Daily tokens tab to find it. The first scan can take time for large histories; subsequent refreshes read changed files. Existing logs are backfilled when the app starts, so it does not need to run all day. Retained numeric records preserve daily history if source files are later removed. Time-zone changes regroup the saved records.
+
+Session-log formats can change with Codex updates. These are recorded local counts, not a complete account usage or billing report. The allowance display uses the documented [`account/rateLimits/read` app-server method](https://learn.chatgpt.com/docs/app-server).
+
+## Mouse and keyboard automation
+
+Open **Auto input**, choose Mouse or Keyboard, and pick a mouse button or key. Set an interval of at least `0.02` seconds. Expand **Delay and repeat count** to set a start delay and number of clicks or key presses (`0` means unlimited).
+
+- Mouse clicks use the pointer's current location. Use the start delay to move it to your target.
+- Keyboard presses go to the focused app. Use the start delay to focus your target.
+- Press **⌘⌥S**, reopen the Codex Usage menu, or click **Stop** to cancel a waiting or active run. Quitting also stops it.
+- Settings are saved separately for mouse and keyboard. Neither tool starts automatically on launch.
+
+Click **Enable Accessibility**, then enable **Codex Usage** under **System Settings → Privacy & Security → Accessibility**. Return to the app and start again. A rebuild or move may require a new grant. The global stop shortcut may also require Input Monitoring on some macOS configurations; reopening the menu remains available.
 
 ## Troubleshooting
 
 | Symptom | Check |
 | --- | --- |
-| `Codex CLI was not found` | Confirm `codex --version` works in Terminal. The app searches `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, and its `PATH`. |
-| No allowance appears | Run `codex` and sign in with ChatGPT, then use the popover's refresh button. The CLI account must have a Codex allowance. |
-| Menu bar item is missing | Check **System Settings → Menu Bar → Allow in the Menu Bar → Codex Usage**. On a notched Mac, check the menu bar's overflow control when space is tight. If you use a menu bar manager, place Codex Usage in its Visible section. Thaw 3.0.0-alpha.7 has a [reported helper crash](https://github.com/thaw-app/Thaw/issues/1194) on macOS 27; update Thaw when a fix is released. Make sure another copy of Codex Usage is not already running. |
-| Auto Press does not start | Grant Accessibility to **Codex Usage**, then reopen the popover and try again. If you rebuild or move the app, macOS may ask you to grant access again. |
-| Stop shortcut does not work | Reopen the popover and click **Stop pressing**. Check macOS Input Monitoring permissions if the global shortcut is unavailable. |
-
-The popover shows the last known allowance with a refresh error if a later check fails. It never treats missing data as zero remaining.
+| Codex CLI was not found | Confirm `codex --version` works in Terminal. The app searches `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, and its `PATH`. |
+| No allowance appears | Sign in to Codex with ChatGPT, then refresh. Missing data is not treated as zero allowance. |
+| Menu bar icon is missing | On macOS 27, run from `/Applications` and check **System Settings → Menu Bar → Allow in the Menu Bar → Codex Usage**. If using a menu bar manager, put Codex Usage in its Visible section. Avoid running multiple copies. |
+| Daily tokens are missing or partial | Check the source-coverage message. Only local sessions that record numeric token events can be counted. |
+| Automation does not start | Grant Accessibility to Codex Usage, reopen its menu, and try again. |
+| Stop shortcut does not work | Reopen the menu to stop. Check Input Monitoring if the global shortcut is unavailable. |
 
 ## Privacy and development
 
-The app asks the local Codex CLI for rate limits; the CLI handles its own authentication and network connection. Auto Press settings remain on your Mac in `UserDefaults`. The app has no analytics, telemetry, or bundled credentials.
+The local Codex CLI handles its own authentication and network access for allowance checks. The token reader stores timestamps, numeric counters, and source-file metadata; it does not store prompts, replies, or credentials in its daily log. Automation settings stay in `UserDefaults`. The app has no analytics or telemetry.
 
-Run `./build.sh` after changing Swift or the icon source. To open the interface in a regular window while developing, run:
+To inspect the interface in a regular development window:
 
 ```sh
 open -n "build/Codex Usage.app" --args --preview
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution and verification notes. The project is available under the [MIT License](LICENSE).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for validation notes. The project is available under the [MIT License](LICENSE).

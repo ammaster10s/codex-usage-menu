@@ -1,93 +1,42 @@
 import AppKit
 import ApplicationServices
-import Carbon
 import Combine
 
-struct KeyOption {
-    let name: String
-    let keyCode: CGKeyCode
-}
-
-let keyOptions: [KeyOption] = [
-    KeyOption(name: "Enter", keyCode: CGKeyCode(kVK_Return)),
-    KeyOption(name: "Space", keyCode: CGKeyCode(kVK_Space)),
-    KeyOption(name: "Tab", keyCode: CGKeyCode(kVK_Tab)),
-    KeyOption(name: "Escape", keyCode: CGKeyCode(kVK_Escape)),
-    KeyOption(name: "Backspace", keyCode: CGKeyCode(kVK_Delete)),
-    KeyOption(name: "Left Arrow", keyCode: CGKeyCode(kVK_LeftArrow)),
-    KeyOption(name: "Right Arrow", keyCode: CGKeyCode(kVK_RightArrow)),
-    KeyOption(name: "Up Arrow", keyCode: CGKeyCode(kVK_UpArrow)),
-    KeyOption(name: "Down Arrow", keyCode: CGKeyCode(kVK_DownArrow)),
-    KeyOption(name: "A", keyCode: CGKeyCode(kVK_ANSI_A)),
-    KeyOption(name: "B", keyCode: CGKeyCode(kVK_ANSI_B)),
-    KeyOption(name: "C", keyCode: CGKeyCode(kVK_ANSI_C)),
-    KeyOption(name: "D", keyCode: CGKeyCode(kVK_ANSI_D)),
-    KeyOption(name: "E", keyCode: CGKeyCode(kVK_ANSI_E)),
-    KeyOption(name: "F", keyCode: CGKeyCode(kVK_ANSI_F)),
-    KeyOption(name: "G", keyCode: CGKeyCode(kVK_ANSI_G)),
-    KeyOption(name: "H", keyCode: CGKeyCode(kVK_ANSI_H)),
-    KeyOption(name: "I", keyCode: CGKeyCode(kVK_ANSI_I)),
-    KeyOption(name: "J", keyCode: CGKeyCode(kVK_ANSI_J)),
-    KeyOption(name: "K", keyCode: CGKeyCode(kVK_ANSI_K)),
-    KeyOption(name: "L", keyCode: CGKeyCode(kVK_ANSI_L)),
-    KeyOption(name: "M", keyCode: CGKeyCode(kVK_ANSI_M)),
-    KeyOption(name: "N", keyCode: CGKeyCode(kVK_ANSI_N)),
-    KeyOption(name: "O", keyCode: CGKeyCode(kVK_ANSI_O)),
-    KeyOption(name: "P", keyCode: CGKeyCode(kVK_ANSI_P)),
-    KeyOption(name: "Q", keyCode: CGKeyCode(kVK_ANSI_Q)),
-    KeyOption(name: "R", keyCode: CGKeyCode(kVK_ANSI_R)),
-    KeyOption(name: "S", keyCode: CGKeyCode(kVK_ANSI_S)),
-    KeyOption(name: "T", keyCode: CGKeyCode(kVK_ANSI_T)),
-    KeyOption(name: "U", keyCode: CGKeyCode(kVK_ANSI_U)),
-    KeyOption(name: "V", keyCode: CGKeyCode(kVK_ANSI_V)),
-    KeyOption(name: "W", keyCode: CGKeyCode(kVK_ANSI_W)),
-    KeyOption(name: "X", keyCode: CGKeyCode(kVK_ANSI_X)),
-    KeyOption(name: "Y", keyCode: CGKeyCode(kVK_ANSI_Y)),
-    KeyOption(name: "Z", keyCode: CGKeyCode(kVK_ANSI_Z)),
-    KeyOption(name: "0", keyCode: CGKeyCode(kVK_ANSI_0)),
-    KeyOption(name: "1", keyCode: CGKeyCode(kVK_ANSI_1)),
-    KeyOption(name: "2", keyCode: CGKeyCode(kVK_ANSI_2)),
-    KeyOption(name: "3", keyCode: CGKeyCode(kVK_ANSI_3)),
-    KeyOption(name: "4", keyCode: CGKeyCode(kVK_ANSI_4)),
-    KeyOption(name: "5", keyCode: CGKeyCode(kVK_ANSI_5)),
-    KeyOption(name: "6", keyCode: CGKeyCode(kVK_ANSI_6)),
-    KeyOption(name: "7", keyCode: CGKeyCode(kVK_ANSI_7)),
-    KeyOption(name: "8", keyCode: CGKeyCode(kVK_ANSI_8)),
-    KeyOption(name: "9", keyCode: CGKeyCode(kVK_ANSI_9))
-]
-
-enum AutoPressPhase {
+enum AutoClickPhase {
     case ready
     case waiting
     case running
 }
 
-final class AutoPressController: ObservableObject {
-    @Published var selectedKeyName: String
+enum MouseClickButton: String, CaseIterable {
+    case left = "Left"
+    case right = "Right"
+}
+
+final class AutoClickController: ObservableObject {
+    @Published var selectedButton: MouseClickButton
     @Published var intervalText: String
     @Published var repeatText: String
     @Published var delayText: String
-    @Published private(set) var phase: AutoPressPhase = .ready
+    @Published private(set) var phase: AutoClickPhase = .ready
     @Published private(set) var statusText = "Ready. ⌘⌥S stops from anywhere."
-    @Published private(set) var pressedCount = 0
+    @Published private(set) var clickedCount = 0
     @Published private(set) var permissionGranted = false
 
-    private var timer: Timer?
     private var startTimer: Timer?
+    private var clickTimer: Timer?
     private var targetCount = 0
-    private var selectedKeyCode = CGKeyCode(kVK_Return)
-    private var activeKeyName = "Enter"
+    private var activeButton: MouseClickButton = .left
     private var globalMonitor: Any?
     private var localMonitor: Any?
     private var hotkeyMonitoringStarted = false
 
     init() {
         let defaults = UserDefaults.standard
-        let savedKey = defaults.string(forKey: "autoPress.key") ?? "Enter"
-        selectedKeyName = keyOptions.contains { $0.name == savedKey } ? savedKey : "Enter"
-        intervalText = defaults.string(forKey: "autoPress.interval") ?? "1.0"
-        repeatText = defaults.string(forKey: "autoPress.repeats") ?? "0"
-        delayText = defaults.string(forKey: "autoPress.delay") ?? "3.0"
+        selectedButton = MouseClickButton(rawValue: defaults.string(forKey: "autoClick.button") ?? "") ?? .left
+        intervalText = defaults.string(forKey: "autoClick.interval") ?? "1.0"
+        repeatText = defaults.string(forKey: "autoClick.repeats") ?? "0"
+        delayText = defaults.string(forKey: "autoClick.delay") ?? "3.0"
         refreshPermission()
     }
 
@@ -100,7 +49,7 @@ final class AutoPressController: ObservableObject {
         permissionGranted = granted
         if !granted && phase != .ready {
             finish(completed: false)
-            statusText = "Accessibility access was removed. Key pressing stopped."
+            statusText = "Accessibility access was removed. Clicking stopped."
         }
     }
 
@@ -127,10 +76,6 @@ final class AutoPressController: ObservableObject {
             statusText = error.rawValue
             return false
         }
-        guard let key = keyOptions.first(where: { $0.name == selectedKeyName }) else {
-            statusText = "Choose a key."
-            return false
-        }
         refreshPermission()
         guard permissionGranted else {
             statusText = "Allow Accessibility access, then try Start again."
@@ -139,21 +84,20 @@ final class AutoPressController: ObservableObject {
         }
 
         let defaults = UserDefaults.standard
-        defaults.set(selectedKeyName, forKey: "autoPress.key")
-        defaults.set(intervalText, forKey: "autoPress.interval")
-        defaults.set(repeatText, forKey: "autoPress.repeats")
-        defaults.set(delayText, forKey: "autoPress.delay")
-        selectedKeyCode = key.keyCode
-        activeKeyName = key.name
+        defaults.set(selectedButton.rawValue, forKey: "autoClick.button")
+        defaults.set(intervalText, forKey: "autoClick.interval")
+        defaults.set(repeatText, forKey: "autoClick.repeats")
+        defaults.set(delayText, forKey: "autoClick.delay")
+        activeButton = selectedButton
         targetCount = configuration.repeats
-        pressedCount = 0
+        clickedCount = 0
         phase = .waiting
         statusText = configuration.delay > 0
             ? "Starting in \(String(format: "%.2f", configuration.delay)) seconds…"
             : "Starting…"
-        // Let the menu close before the first press, even with no requested delay.
+        // Let the menu close before the first click, even with no requested delay.
         let timer = Timer(timeInterval: max(configuration.delay, 0.15), repeats: false) { [weak self] _ in
-            self?.beginPressing(interval: configuration.interval)
+            self?.beginClicking(interval: configuration.interval)
         }
         startTimer = timer
         RunLoop.main.add(timer, forMode: .common)
@@ -165,14 +109,14 @@ final class AutoPressController: ObservableObject {
         finish(completed: false)
     }
 
-    private func beginPressing(interval: Double) {
+    private func beginClicking(interval: TimeInterval) {
         refreshPermission()
         guard phase == .waiting && permissionGranted else { return }
         startTimer = nil
         phase = .running
-        statusText = "Pressing \(activeKeyName). ⌘⌥S stops."
+        statusText = "\(activeButton.rawValue) clicking at the pointer. ⌘⌥S stops."
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.tick() }
-        self.timer = timer
+        clickTimer = timer
         RunLoop.main.add(timer, forMode: .common)
         timer.fire()
     }
@@ -180,15 +124,16 @@ final class AutoPressController: ObservableObject {
     private func tick() {
         refreshPermission()
         guard phase == .running && permissionGranted else { return }
-        guard let events = Self.keyboardEvents(keyCode: selectedKeyCode) else {
+        guard let cursor = CGEvent(source: nil),
+              let events = Self.mouseEvents(button: activeButton, location: cursor.location) else {
             finish(completed: false)
-            statusText = "Could not create a keyboard event."
+            statusText = "Could not create a mouse click event."
             return
         }
         events.down.post(tap: .cghidEventTap)
         events.up.post(tap: .cghidEventTap)
-        pressedCount += 1
-        if targetCount > 0 && pressedCount >= targetCount {
+        clickedCount += 1
+        if targetCount > 0 && clickedCount >= targetCount {
             finish(completed: true)
         }
     }
@@ -196,12 +141,12 @@ final class AutoPressController: ObservableObject {
     private func finish(completed: Bool) {
         startTimer?.invalidate()
         startTimer = nil
-        timer?.invalidate()
-        timer = nil
+        clickTimer?.invalidate()
+        clickTimer = nil
         phase = .ready
         statusText = completed
-            ? "Completed \(pressedCount) key presses."
-            : "Stopped after \(pressedCount) key presses."
+            ? "Completed \(clickedCount) clicks."
+            : "Stopped after \(clickedCount) clicks."
     }
 
     func installStopHotkey() {
@@ -244,7 +189,7 @@ final class AutoPressController: ObservableObject {
 
     private enum ValidationError: String, Error {
         case interval = "Interval must be at least 0.02 seconds."
-        case repeats = "Repeats must be 0 or a positive whole number."
+        case repeats = "Click count must be 0 or a positive whole number."
         case delay = "Delay must be zero or more seconds."
     }
 
@@ -258,13 +203,16 @@ final class AutoPressController: ObservableObject {
         return .success(Configuration(interval: intervalValue, repeats: repeatValue, delay: delayValue))
     }
 
-    private static func keyboardEvents(keyCode: CGKeyCode) -> (down: CGEvent, up: CGEvent)? {
+    private static func mouseEvents(button: MouseClickButton, location: CGPoint) -> (down: CGEvent, up: CGEvent)? {
+        let mouseButton: CGMouseButton = button == .left ? .left : .right
+        let downType: CGEventType = button == .left ? .leftMouseDown : .rightMouseDown
+        let upType: CGEventType = button == .left ? .leftMouseUp : .rightMouseUp
         guard let source = CGEventSource(stateID: .hidSystemState),
-              let down = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
-              let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false) else { return nil }
+              let down = CGEvent(mouseEventSource: source, mouseType: downType, mouseCursorPosition: location, mouseButton: mouseButton),
+              let up = CGEvent(mouseEventSource: source, mouseType: upType, mouseCursorPosition: location, mouseButton: mouseButton) else { return nil }
         for event in [down, up] {
             event.flags = []
-            event.setIntegerValueField(.keyboardEventAutorepeat, value: 0)
+            event.setIntegerValueField(.mouseEventClickState, value: 1)
         }
         return (down, up)
     }
@@ -290,25 +238,28 @@ final class AutoPressController: ObservableObject {
         for (interval, repeats, delay) in [("1.0", "0", "3.0"), ("0.02", "1", "0"), (" 0.5 ", " 5 ", " 0 ")] {
             switch parseConfiguration(interval: interval, repeats: repeats, delay: delay) {
             case .failure:
-                failures.append("Rejected valid key press settings: \(interval), \(repeats), \(delay)")
+                failures.append("Rejected valid click settings: \(interval), \(repeats), \(delay)")
             case .success(let parsed):
                 if parsed.interval != Double(interval.trimmingCharacters(in: .whitespaces))
                     || parsed.repeats != Int(repeats.trimmingCharacters(in: .whitespaces))
                     || parsed.delay != Double(delay.trimmingCharacters(in: .whitespaces)) {
-                    failures.append("Parsed key press settings incorrectly.")
+                    failures.append("Parsed click settings incorrectly.")
                 }
             }
         }
-        for key in keyOptions {
-            guard let events = keyboardEvents(keyCode: key.keyCode) else {
-                failures.append("Could not construct \(key.name) keyboard events.")
+        let location = CGPoint(x: 144, y: 233)
+        for button in MouseClickButton.allCases {
+            guard let events = mouseEvents(button: button, location: location) else {
+                failures.append("Could not construct \(button.rawValue.lowercased()) click events.")
                 continue
             }
-            for (event, expectedType) in zip([events.down, events.up], [CGEventType.keyDown, .keyUp]) {
-                if event.type != expectedType
-                    || event.getIntegerValueField(.keyboardEventKeycode) != Int64(key.keyCode)
-                    || event.getIntegerValueField(.keyboardEventAutorepeat) != 0 || !event.flags.isEmpty {
-                    failures.append("Incorrect \(key.name) keyboard event.")
+            let expectedButton: CGMouseButton = button == .left ? .left : .right
+            let expectedTypes: [CGEventType] = button == .left ? [.leftMouseDown, .leftMouseUp] : [.rightMouseDown, .rightMouseUp]
+            for (event, expectedType) in zip([events.down, events.up], expectedTypes) {
+                if event.type != expectedType || event.location != location
+                    || event.getIntegerValueField(.mouseEventButtonNumber) != Int64(expectedButton.rawValue)
+                    || event.getIntegerValueField(.mouseEventClickState) != 1 || !event.flags.isEmpty {
+                    failures.append("Incorrect \(button.rawValue.lowercased()) click event.")
                 }
             }
         }

@@ -22,7 +22,9 @@ cp "$project_dir/Info.plist" "$contents_dir/Info.plist"
 xcrun swiftc -O -parse-as-library \
   -framework AppKit -framework ApplicationServices -framework Carbon \
   "$project_dir/CodexUsageMenu.swift" \
+  "$project_dir/AutoClickController.swift" \
   "$project_dir/AutoPressController.swift" \
+  "$project_dir/DailyTokenUsage.swift" \
   -o "$contents_dir/MacOS/CodexUsageMenu"
 codesign --force --sign - "$app_dir"
 echo "$app_dir"
