@@ -93,7 +93,7 @@ private enum UsageFetcher {
             "params": ["clientInfo": [
                 "name": "codex_usage_menu",
                 "title": "Codex Usage Menu",
-                "version": "1.2.0"
+                "version": "1.3.0"
             ]]
         ])
         _ = try response(for: 1)
@@ -159,7 +159,7 @@ private extension Double {
     }
 }
 
-private enum Palette {
+enum Palette {
     static let background = Color(red: 0.12, green: 0.23, blue: 0.36)
     static let card = Color(red: 0.17, green: 0.30, blue: 0.44)
     static let track = Color(red: 0.25, green: 0.39, blue: 0.53)
@@ -265,7 +265,7 @@ private struct WindowRow: View {
     }
 }
 
-private final class TokenUsageModel: ObservableObject {
+final class TokenUsageModel: ObservableObject {
     @Published var snapshot: DailyTokenUsageSnapshot?
     @Published var error: String?
     @Published var refreshing = false
@@ -285,6 +285,7 @@ private struct UsagePopover: View {
     let refresh: () -> Void
     let startClicking: () -> Void
     let startPressing: () -> Void
+    let openFullLog: () -> Void
     let quit: () -> Void
     @State private var page: PopoverPage = .allowance
 
@@ -321,7 +322,7 @@ private struct UsagePopover: View {
             case .allowance:
                 allowance
             case .tokens:
-                DailyTokensPanel(model: tokens)
+                DailyTokensPanel(model: tokens, openFullLog: openFullLog)
             case .input:
                 AutoInputPanel(autoClick: autoClick, autoPress: autoPress,
                                startClicking: startClicking, startPressing: startPressing)
@@ -394,6 +395,7 @@ private struct UsagePopover: View {
 
 private struct DailyTokensPanel: View {
     @ObservedObject var model: TokenUsageModel
+    let openFullLog: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -451,9 +453,7 @@ private struct DailyTokensPanel: View {
                     .foregroundStyle(snapshot.hasCoverageWarning
                                      ? Color(red: 1, green: 0.75, blue: 0.72) : Palette.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Button("Open daily log") {
-                    NSWorkspace.shared.activateFileViewerSelecting([snapshot.logURL])
-                }
+                Button("Open full log", action: openFullLog)
                 .font(.system(size: 11, weight: .medium))
                 .buttonStyle(.plain)
                 .foregroundStyle(Palette.highlight)
@@ -642,6 +642,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private let popover = NSPopover()
     private var timer: Timer?
     private var previewWindow: NSWindow?
+    private var tokenLogWindow: NSWindow?
     private var phaseCancellables: [AnyCancellable] = []
 
     override init() {
@@ -657,7 +658,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let isPreview = CommandLine.arguments.contains("--preview")
-        NSApp.setActivationPolicy(isPreview ? .regular : .accessory)
+        let isLogPreview = CommandLine.arguments.contains("--preview-log")
+        NSApp.setActivationPolicy(isPreview || isLogPreview ? .regular : .accessory)
         popover.behavior = .transient
         popover.appearance = NSAppearance(named: .darkAqua)
         popover.contentSize = NSSize(width: 390, height: 230)
@@ -669,6 +671,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             refresh: { [weak self] in self?.refresh() },
             startClicking: { [weak self] in self?.startClicking() },
             startPressing: { [weak self] in self?.startPressing() },
+            openFullLog: { [weak self] in self?.openTokenLog() },
             quit: { NSApp.terminate(nil) }
         )
         let hosting = NSHostingController(rootView: content)
@@ -709,6 +712,31 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             previewWindow = window
             NSApp.activate(ignoringOtherApps: true)
         }
+        if isLogPreview { openTokenLog() }
+    }
+
+    private func openTokenLog() {
+        autoClick.stop()
+        autoPress.stop()
+        popover.performClose(nil)
+        if tokenLogWindow == nil {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 1140, height: 740),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered, defer: false
+            )
+            window.title = "Codex Usage Log"
+            window.appearance = NSAppearance(named: .darkAqua)
+            window.minSize = NSSize(width: 980, height: 580)
+            window.isReleasedWhenClosed = false
+            window.contentView = NSHostingView(rootView: TokenUsageLogView(
+                model: tokens, refresh: { [weak self] in self?.refreshTokens() }
+            ))
+            window.center()
+            tokenLogWindow = window
+        }
+        tokenLogWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc private func togglePopover(_ sender: Any?) {
@@ -798,6 +826,13 @@ private enum CodexUsageMenu {
 
     static func main() {
         signal(SIGPIPE, SIG_IGN)
+        if CommandLine.arguments.contains("--check-token-costs") {
+            let failures = TokenCostCatalog.selfCheck() + TokenUsageLogReport.selfCheck()
+            for failure in failures { fputs("\(failure)\n", stderr) }
+            guard failures.isEmpty else { exit(1) }
+            print("Token cost and log report checks passed")
+            return
+        }
         if CommandLine.arguments.contains("--check-input") {
             let failures = AutoClickController.selfCheck() + AutoPressController.selfCheck()
             for failure in failures { fputs("\(failure)\n", stderr) }

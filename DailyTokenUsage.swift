@@ -11,6 +11,17 @@ struct DailyTokenDay: Codable, Equatable {
     let reasoningOutputTokens: Int64
 }
 
+struct DailyTokenModelDay: Codable, Equatable {
+    let date: String
+    /// The recorded model identifier, or "unknown" when unavailable.
+    let model: String
+    let totalTokens: Int64
+    let inputTokens: Int64
+    let cachedInputTokens: Int64
+    let outputTokens: Int64
+    let reasoningOutputTokens: Int64
+}
+
 struct DailyTokenUsageSnapshot {
     let days: [DailyTokenDay]
     let checkedAt: Date
@@ -21,6 +32,7 @@ struct DailyTokenUsageSnapshot {
     let persistenceWarning: Bool
     let coverageSummary: String
     let logURL: URL
+    var modelDays: [DailyTokenModelDay] = []
 
     static let disclaimer = "Local Codex sessions on this Mac only. ChatGPT chats, other devices, and API billing are not included."
     var disclaimer: String { Self.disclaimer }
@@ -29,14 +41,14 @@ struct DailyTokenUsageSnapshot {
     }
 }
 
-/// Reads numeric token events only; never stores prompts, replies, or credentials.
+/// Reads token counters and recorded model identifiers; never stores prompts, replies, or credentials.
 /// The compact local log also caches file offsets because session histories can
 /// contain several gigabytes of unrelated conversation and image data.
 enum DailyTokenUsageReader {
     private static let lock = NSLock()
     private static var memoryCache: Cache?
     private static var needsSave = false
-    private static let cacheVersion = 1
+    private static let cacheVersion = 2
     private static let maxLineBytes = 1_048_576
 
     static func read() throws -> DailyTokenUsageSnapshot {
@@ -54,12 +66,14 @@ enum DailyTokenUsageReader {
         var cache = memoryCache ?? ((try? Data(contentsOf: logURL)).flatMap {
             try? JSONDecoder().decode(Cache.self, from: $0)
         } ?? Cache())
-        if cache.version != cacheVersion { cache = Cache() }
 
         var present = Set<String>()
         var unreadable = 0
         var unavailableDirectories = 0
-        var changed = cache.timeZone != TimeZone.autoupdatingCurrent.identifier
+        var changed = cache.timeZone != TimeZone.autoupdatingCurrent.identifier || cache.version != cacheVersion
+        // Version 1 already contains trustworthy numeric history. Keep it while
+        // available sources are rescanned once for recorded model context.
+        cache.version = cacheVersion
         for directory in ["sessions", "archived_sessions"] {
             let root = codexRoot.appendingPathComponent(directory, isDirectory: true)
             var isDirectory: ObjCBool = false
@@ -85,15 +99,17 @@ enum DailyTokenUsageReader {
                     let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
                     let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
                     let inode = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
-                    if let old = cache.files[path], old.size == size, old.modified == modified, old.inode == inode {
+                    let old = cache.files[path]
+                    let needsEnrichment = old.map { $0.modelAttributionVersion != cacheVersion } ?? false
+                    if let old, !needsEnrichment, old.size == size, old.modified == modified, old.inode == inode {
                         continue
                     }
-                    let old = cache.files[path]
-                    let append = old.map { $0.inode == inode && size > $0.size } ?? false
+                    let append = old.map { !needsEnrichment && $0.inode == inode && size > $0.size } ?? false
                     let parsed = try scan(url: url, previous: append ? old : nil, size: size,
                                           modified: modified, inode: inode)
-                    // A source read error never replaces the previous, successful history.
-                    cache.files[path] = parsed
+                    // Attribution enrichment never deletes recorded numeric
+                    // history, including events no longer present in the source.
+                    cache.files[path] = needsEnrichment && old != nil ? enrich(old!, with: parsed) : parsed
                     changed = true
                 } catch { unreadable += 1 }
             }
@@ -101,12 +117,16 @@ enum DailyTokenUsageReader {
 
         // A move to archived_sessions leaves the same events under another path.
         // Drop the old cache only when the present source covers all its events.
-        let currentFiles = cache.files.filter { present.contains($0.key) }.map(\.value)
+        let currentFiles = cache.files.filter { present.contains($0.key) }
         for (path, old) in cache.files where !present.contains(path) {
             guard let replacement = currentFiles.first(where: {
-                $0.ownerID == old.ownerID && $0.ownerID != nil && Set($0.events).isSuperset(of: Set(old.events))
+                $0.value.ownerID == old.ownerID && $0.value.ownerID != nil &&
+                    Set($0.value.events).isSuperset(of: Set(old.events))
             }) else { continue }
-            if replacement.events.count >= old.events.count {
+            if replacement.value.events.count >= old.events.count {
+                // Preserve known context when the archive copy has fewer model
+                // fields than the already recorded source.
+                cache.files[replacement.key] = enrich(old, with: cache.files[replacement.key]!)
                 cache.files.removeValue(forKey: path)
                 changed = true
             }
@@ -118,6 +138,7 @@ enum DailyTokenUsageReader {
         let days = result.days
         cache.checkedAt = checkedAt
         cache.days = days
+        cache.modelDays = result.modelDays
         cache.timeZone = TimeZone.autoupdatingCurrent.identifier
         var persistenceWarning = false
         if changed || memoryCache == nil || needsSave {
@@ -140,7 +161,7 @@ enum DailyTokenUsageReader {
         return DailyTokenUsageSnapshot(days: days, checkedAt: checkedAt, sourceFileCount: present.count,
             unreadableFileCount: inaccessible, skippedRecordCount: skipped,
             retainedFileCount: retained, persistenceWarning: persistenceWarning,
-            coverageSummary: coverage, logURL: logURL)
+            coverageSummary: coverage, logURL: logURL, modelDays: result.modelDays)
     }
 
     private struct Tokens: Codable, Equatable, Hashable {
@@ -192,6 +213,18 @@ enum DailyTokenUsageReader {
         var timestamp: Date
         var counters: Tokens
         var last: Tokens?
+        var model: String? = nil
+
+        // Model context is enrichment, not event identity. An old unknown copy
+        // and its enriched copy must remain the same numeric event.
+        static func == (lhs: Event, rhs: Event) -> Bool {
+            lhs.owner == rhs.owner && lhs.timestamp == rhs.timestamp &&
+                lhs.counters == rhs.counters && lhs.last == rhs.last
+        }
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(owner); hasher.combine(timestamp)
+            hasher.combine(counters); hasher.combine(last)
+        }
     }
     private struct FileRecord: Codable {
         var size: UInt64 = 0
@@ -203,6 +236,9 @@ enum DailyTokenUsageReader {
         var forkedFromID: String?
         var historyOwnerID: String?
         var inheritedBaseline: Event?
+        var currentModel: String?
+        var currentModelOwnerID: String?
+        var modelAttributionVersion: Int?
         var events: [Event] = []
         var skippedRecords = 0
     }
@@ -211,7 +247,35 @@ enum DailyTokenUsageReader {
         var checkedAt: Date?
         var timeZone: String?
         var days: [DailyTokenDay] = []
+        var modelDays: [DailyTokenModelDay]?
         var files: [String: FileRecord] = [:]
+    }
+    private static func merge(_ old: Event?, _ incoming: Event) -> Event {
+        guard let old else { return incoming }
+        var result = old
+        if old.model == nil {
+            result.model = incoming.model
+        } else if let model = incoming.model, model != old.model {
+            // Conflicting explicit context is ambiguous; do not choose a model
+            // based on dictionary or filesystem enumeration order.
+            result.model = "unknown"
+        }
+        return result
+    }
+    private static func enrich(_ old: FileRecord, with parsed: FileRecord) -> FileRecord {
+        var result = parsed
+        var events: [Event: Event] = [:]
+        for event in old.events + parsed.events { events[event] = merge(events[event], event) }
+        result.events = Array(events.values)
+        if result.ownerID == nil {
+            result.ownerID = old.ownerID
+            result.createdAt = old.createdAt
+            result.forkedFromID = old.forkedFromID
+        }
+        if result.inheritedBaseline == nil, result.ownerID == old.ownerID {
+            result.inheritedBaseline = old.inheritedBaseline.map { events[$0] ?? $0 }
+        }
+        return result
     }
 
     private static func scan(url: URL, previous: FileRecord?, size: UInt64,
@@ -231,6 +295,10 @@ enum DailyTokenUsageReader {
                 // Only candidate metadata/token lines matter; image and message
                 // lines may be huge and are intentionally ignored.
                 if isCandidate(line) { file.skippedRecords += 1 }
+                if line.range(of: Data("\"turn_context\"".utf8)) != nil {
+                    file.currentModel = nil
+                    file.currentModelOwnerID = nil
+                }
             } else { consume(line, into: &file, formatter: formatter, plainFormatter: plainFormatter) }
             line.removeAll(keepingCapacity: true)
             oversized = false
@@ -262,11 +330,20 @@ enum DailyTokenUsageReader {
         // An unfinished append is not a corrupt record, and its bytes are
         // revisited later. No conversation content is retained in the cache.
         file.size = size; file.modified = modified; file.inode = inode
+        file.modelAttributionVersion = cacheVersion
         return file
     }
     private static func isCandidate(_ data: Data) -> Bool {
         data.range(of: Data("\"token_count\"".utf8)) != nil ||
-        data.range(of: Data("\"session_meta\"".utf8)) != nil
+        data.range(of: Data("\"session_meta\"".utf8)) != nil ||
+        data.range(of: Data("\"turn_context\"".utf8)) != nil
+    }
+    private static func recordedModel(_ value: Any?) -> String? {
+        guard let raw = value as? String else { return nil }
+        let model = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !model.isEmpty, model.count <= 128,
+              model.rangeOfCharacter(from: .controlCharacters) == nil else { return nil }
+        return model
     }
     private static func consume(_ data: Data, into file: inout FileRecord,
                                 formatter: ISO8601DateFormatter, plainFormatter: ISO8601DateFormatter) {
@@ -274,6 +351,10 @@ enum DailyTokenUsageReader {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let payload = object["payload"] as? [String: Any] else {
             file.skippedRecords += 1
+            if data.range(of: Data("\"turn_context\"".utf8)) != nil {
+                file.currentModel = nil
+                file.currentModelOwnerID = nil
+            }
             return
         }
         func date(_ value: Any?) -> Date? {
@@ -291,6 +372,21 @@ enum DailyTokenUsageReader {
                 file.forkedFromID = payload["forked_from_id"] as? String
             }
             file.historyOwnerID = id
+            // A copied session header is not proof that the descendant uses
+            // the ancestor's model. Wait for its recorded turn context.
+            file.currentModel = nil
+            file.currentModelOwnerID = nil
+            return
+        }
+        if object["type"] as? String == "turn_context" {
+            guard let timestamp = date(object["timestamp"]) else {
+                file.currentModel = nil
+                file.currentModelOwnerID = nil
+                return
+            }
+            let inherited = file.createdAt.map { timestamp < $0 } ?? false
+            file.currentModel = recordedModel(payload["model"])
+            file.currentModelOwnerID = inherited ? file.historyOwnerID : file.ownerID
             return
         }
         guard object["type"] as? String == "event_msg", payload["type"] as? String == "token_count" else { return }
@@ -304,7 +400,8 @@ enum DailyTokenUsageReader {
         let inherited = file.createdAt.map { timestamp < $0 } ?? false
         let eventOwner = inherited ? (file.historyOwnerID ?? file.forkedFromID ?? owner) : owner
         let event = Event(owner: eventOwner, timestamp: timestamp, counters: counters,
-                          last: Tokens(info["last_token_usage"] as? [String: Any]))
+                          last: Tokens(info["last_token_usage"] as? [String: Any]),
+                          model: file.currentModelOwnerID == eventOwner ? file.currentModel : nil)
         if inherited {
             if file.inheritedBaseline == nil || timestamp >= file.inheritedBaseline!.timestamp {
                 file.inheritedBaseline = event
@@ -313,13 +410,20 @@ enum DailyTokenUsageReader {
         file.events.append(event)
     }
 
-    private static func aggregate(_ files: [FileRecord], timeZone: TimeZone) -> (days: [DailyTokenDay], skipped: Int) {
+    private struct ModelDayKey: Hashable {
+        let date: String
+        let model: String
+    }
+    private static func aggregate(_ files: [FileRecord], timeZone: TimeZone) ->
+        (days: [DailyTokenDay], modelDays: [DailyTokenModelDay], skipped: Int) {
         // Exact event copies (including archived files and inherited fork
         // history) count once, while independent subagents count separately.
-        var groups: [String: Set<Event>] = [:]
+        var groups: [String: [Event: Event]] = [:]
         var baselines: [String: Event] = [:]
         for file in files {
-            for event in file.events { groups[event.owner, default: []].insert(event) }
+            for event in file.events {
+                groups[event.owner, default: [:]][event] = merge(groups[event.owner]?[event], event)
+            }
             if let owner = file.ownerID, let baseline = file.inheritedBaseline,
                baselines[owner] == nil || baseline.timestamp > baselines[owner]!.timestamp {
                 baselines[owner] = baseline
@@ -331,10 +435,12 @@ enum DailyTokenUsageReader {
         dayFormatter.timeZone = timeZone
         dayFormatter.dateFormat = "yyyy-MM-dd"
         var days: [String: Tokens] = [:]
+        var models: [ModelDayKey: Tokens] = [:]
         var skipped = 0
         for owner in groups.keys.sorted() {
-            let events = groups[owner]!
+            let events = groups[owner]!.values
             var previous = baselines[owner]?.counters
+            var previousModel = baselines[owner]?.model
             let baselineDate = baselines[owner]?.timestamp
             for event in events.sorted(by: {
                 if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
@@ -368,14 +474,24 @@ enum DailyTokenUsageReader {
                     increment = event.last
                     skipped += 1
                 }
+                var model = event.model
+                if previous != nil, previousModel != event.model, increment != event.last {
+                    // A delta spanning missing requests around a model switch
+                    // cannot all be assigned to the newest recorded model.
+                    model = nil
+                }
                 previous = event.counters
+                previousModel = event.model
                 guard let increment else { continue }
                 let day = dayFormatter.string(from: event.timestamp)
-                guard let combined = (days[day] ?? .zero).adding(increment) else {
+                let key = ModelDayKey(date: day, model: model ?? "unknown")
+                guard let combined = (days[day] ?? .zero).adding(increment),
+                      let modelCombined = (models[key] ?? .zero).adding(increment) else {
                     skipped += 1
                     continue
                 }
                 days[day] = combined
+                models[key] = modelCombined
             }
         }
         return (days.keys.sorted(by: >).map { date in
@@ -383,6 +499,13 @@ enum DailyTokenUsageReader {
             return DailyTokenDay(date: date, totalTokens: tokens.total, inputTokens: tokens.input,
                 cachedInputTokens: tokens.cached, outputTokens: tokens.output,
                 reasoningOutputTokens: tokens.reasoning)
+        }, models.keys.sorted(by: {
+            $0.date == $1.date ? $0.model < $1.model : $0.date > $1.date
+        }).map { key in
+            let tokens = models[key]!
+            return DailyTokenModelDay(date: key.date, model: key.model, totalTokens: tokens.total,
+                inputTokens: tokens.input, cachedInputTokens: tokens.cached,
+                outputTokens: tokens.output, reasoningOutputTokens: tokens.reasoning)
         }, skipped)
     }
 
@@ -458,8 +581,14 @@ enum DailyTokenUsageReader {
         let rawB: [String: Any] = ["input_tokens": 150, "cached_input_tokens": 90,
                                   "output_tokens": 30, "reasoning_output_tokens": 12, "total_tokens": 180]
         for (timestamp, raw) in [("2026-10-01T14:59:59Z", rawA), ("2026-10-01T15:00:01Z", rawB)] {
+            consume(fixture(["timestamp": timestamp, "type": "turn_context",
+                             "payload": ["model": timestamp < "2026-10-01T15:00:00Z" ? "model-a" : "model-b"]]),
+                    into: &parsed, formatter: jsonFormatter, plainFormatter: formatter)
+            let last: [String: Any] = timestamp < "2026-10-01T15:00:00Z" ? rawA :
+                ["input_tokens": 50, "cached_input_tokens": 30, "output_tokens": 10,
+                 "reasoning_output_tokens": 4, "total_tokens": 60]
             consume(fixture(["timestamp": timestamp, "type": "event_msg",
-                             "payload": ["type": "token_count", "info": ["total_token_usage": raw, "last_token_usage": raw]]]),
+                             "payload": ["type": "token_count", "info": ["total_token_usage": raw, "last_token_usage": last]]]),
                     into: &parsed, formatter: jsonFormatter, plainFormatter: formatter)
         }
         if parsed.ownerID != "child" || parsed.events.map(\.owner) != ["root", "child"] ||
@@ -470,6 +599,76 @@ enum DailyTokenUsageReader {
         if parsedDays.days.map(\.totalTokens) != [60, 120] {
             failures.append("Copied history parser must retain the fork baseline")
         }
+        func reconciles(_ result: (days: [DailyTokenDay], modelDays: [DailyTokenModelDay], skipped: Int)) -> Bool {
+            result.days.allSatisfy { day in
+                let models = result.modelDays.filter { $0.date == day.date }
+                return models.reduce(Int64(0), { $0 + $1.totalTokens }) == day.totalTokens &&
+                    models.reduce(Int64(0), { $0 + $1.inputTokens }) == day.inputTokens &&
+                    models.reduce(Int64(0), { $0 + $1.cachedInputTokens }) == day.cachedInputTokens &&
+                    models.reduce(Int64(0), { $0 + $1.outputTokens }) == day.outputTokens &&
+                    models.reduce(Int64(0), { $0 + $1.reasoningOutputTokens }) == day.reasoningOutputTokens
+            }
+        }
+        if parsed.events.map(\.model) != ["model-a", "model-b"] ||
+            parsedDays.modelDays.map(\.model) != ["model-b", "model-a"] || !reconciles(parsedDays) {
+            failures.append("Recorded fork contexts and per-model totals must reconcile")
+        }
+        var attributed = FileRecord(); attributed.ownerID = "root"
+        var modeledFirst = e1; modeledFirst.model = "model-a"
+        var modeledSecond = e2; modeledSecond.model = "model-b"
+        attributed.events = [modeledFirst, modeledSecond,
+            Event(owner: "root", timestamp: t3, counters: reset, last: reset)]
+        var attributionDuplicate = FileRecord(); attributionDuplicate.ownerID = "root"; attributionDuplicate.events = [e1, e2]
+        let attribution = aggregate([attributed, attributionDuplicate], timeZone: zone)
+        if attribution.modelDays.map(\.model) != ["model-b", "unknown", "model-a"] ||
+            attribution.modelDays.map(\.totalTokens) != [60, 13, 120] || !reconciles(attribution) {
+            failures.append("Model switching, unknown context, reset, and duplicate reconciliation")
+        }
+        var uncertainSwitch = FileRecord(); uncertainSwitch.ownerID = "root"
+        uncertainSwitch.events = [modeledFirst,
+            Event(owner: "root", timestamp: t2, counters: b, last: reset, model: "model-b")]
+        let uncertain = aggregate([uncertainSwitch], timeZone: zone)
+        if uncertain.modelDays.first?.model != "unknown" || !reconciles(uncertain) {
+            failures.append("An unitemized delta across a model switch must stay unknown")
+        }
+        var conflict = attributed
+        conflict.events = [modeledSecond]
+        conflict.events[0].model = "different-model"
+        let conflicted = aggregate([attributed, conflict], timeZone: zone)
+        let reverseConflict = aggregate([conflict, attributed], timeZone: zone)
+        if conflicted.modelDays != reverseConflict.modelDays || !reconciles(conflicted) ||
+            conflicted.modelDays.first(where: { $0.date == "2026-10-02" && $0.model == "unknown" })?.totalTokens != 73 {
+            failures.append("Conflicting duplicate contexts must stay unknown and count once")
+        }
+        do {
+            // Remove precisely the fields absent from the original numeric cache.
+            var oldJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as! [String: Any]
+            for key in ["currentModel", "currentModelOwnerID", "modelAttributionVersion"] { oldJSON.removeValue(forKey: key) }
+            oldJSON["events"] = (oldJSON["events"] as! [[String: Any]]).map { raw in
+                var event = raw; event.removeValue(forKey: "model"); return event
+            }
+            let legacyFile = try JSONDecoder().decode(FileRecord.self,
+                from: JSONSerialization.data(withJSONObject: oldJSON))
+            let legacy = aggregate([legacyFile], timeZone: zone)
+            let migrated = aggregate([enrich(legacyFile, with: attributed)], timeZone: zone)
+            if migrated.days != legacy.days || !reconciles(migrated) ||
+                aggregate([legacyFile], timeZone: zone).modelDays.contains(where: { $0.model != "unknown" }) {
+                failures.append("Legacy enrichment must preserve numbers and missing-source unknown models")
+            }
+            // An incremental append retains its explicit model through the cache;
+            // a new context lacking model information clears that attribution.
+            var continued = try JSONDecoder().decode(FileRecord.self, from: JSONEncoder().encode(parsed))
+            consume(fixture(["timestamp": "2026-10-01T15:00:02Z", "type": "event_msg",
+                             "payload": ["type": "token_count", "info": ["total_token_usage": rawB, "last_token_usage": rawB]]]),
+                    into: &continued, formatter: jsonFormatter, plainFormatter: formatter)
+            if continued.events.last?.model != "model-b" { failures.append("Incremental cached model context") }
+            consume(fixture(["timestamp": "2026-10-01T15:00:03Z", "type": "turn_context", "payload": [:]]),
+                    into: &continued, formatter: jsonFormatter, plainFormatter: formatter)
+            consume(fixture(["timestamp": "2026-10-01T15:00:04Z", "type": "event_msg",
+                             "payload": ["type": "token_count", "info": ["total_token_usage": rawB, "last_token_usage": rawB]]]),
+                    into: &continued, formatter: jsonFormatter, plainFormatter: formatter)
+            if continued.events.last?.model != nil { failures.append("Absent model must not reuse an older turn's model") }
+        } catch { failures.append("Model attribution migration/cache fixtures: \(error.localizedDescription)") }
         return failures
     }
 }

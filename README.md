@@ -11,7 +11,7 @@ This is an independent community project, not an official OpenAI app. It can run
 The existing gauge icon shows the lowest remaining percentage among the Codex allowance windows returned for your signed-in account. Click it for three compact tabs:
 
 - **Allowance:** remaining usage and reset time for each available window.
-- **Daily tokens:** today's recorded input, output, cached-input, and reasoning-output counts, plus the last seven recorded days and a link to the local log.
+- **Daily tokens:** today's recorded input, output, cached-input, and reasoning-output counts, plus the last seven recorded days. **Open full log** opens the complete history in a separate window.
 - **Auto input:** choose **Mouse** or **Keyboard**. Only the selected tool's controls appear; delay and repeat count are tucked into an expandable section.
 
 The app refreshes allowance and token records on launch, every two minutes, and when you click refresh. The clicker and keyboard presser share an activity indicator and never run together.
@@ -41,10 +41,11 @@ For verification without posting mouse or keyboard input:
 "build/Codex Usage.app/Contents/MacOS/CodexUsageMenu" --check
 "build/Codex Usage.app/Contents/MacOS/CodexUsageMenu" --check-input
 "build/Codex Usage.app/Contents/MacOS/CodexUsageMenu" --check-token-parser
+"build/Codex Usage.app/Contents/MacOS/CodexUsageMenu" --check-token-costs
 "build/Codex Usage.app/Contents/MacOS/CodexUsageMenu" --check-tokens
 ```
 
-`--check` reads the current allowance. `--check-input` validates automation settings and constructs events without sending them. `--check-token-parser` uses synthetic fixtures. `--check-tokens` reads your real local token records and saves the daily log.
+`--check` reads the current allowance. `--check-input` validates automation settings and constructs events without sending them. `--check-token-parser` and `--check-token-costs` use synthetic fixtures. `--check-tokens` reads your real local token records and saves the daily log.
 
 ## Daily token records
 
@@ -60,7 +61,17 @@ The local log and incremental index are saved in:
 ~/Library/Application Support/Codex Usage/daily-token-usage.json
 ```
 
-Use **Open daily log** in the Daily tokens tab to find it. The first scan can take time for large histories; subsequent refreshes read changed files. Existing logs are backfilled when the app starts, so it does not need to run all day. Retained numeric records preserve daily history if source files are later removed. Time-zone changes regroup the saved records.
+Use **Open full log** in the Daily tokens tab, then **Reveal JSON log** to find this file. The first scan can take time for large histories; subsequent refreshes read changed files. Existing logs are backfilled when the app starts, so it does not need to run all day. Retained numeric records preserve daily history if source files are later removed. Time-zone changes regroup the saved records.
+
+### Full usage log and cost estimates
+
+The full log shows all recorded history **by model** or **by day and model**. Filter by period and model, or export the selected daily rows to CSV. Model identifiers come from recorded session/turn context; missing or ambiguous attribution appears as **Unknown model**. Updating from the earlier token logger rescans available sources once to add model names and retains numeric history from missing sources.
+
+**Estimated API equivalent** compares recorded tokens with reviewed, current Standard API short-context USD prices. It applies the input rate to uncached input, the cached-input rate to cached input, and the output rate to output. Reasoning is included in output. **Estimated cache savings** shows the cache-read discount compared with charging cached input at the uncached rate.
+
+These are approximate comparisons, not your Codex bill, historical spend, or confirmed money saved. Local records do not identify cache writes, context-length premiums, service tiers, regional premiums, or tool fees. Cache savings exclude cache-write premiums. Models without a verified published price remain **Unpriced** and are excluded from dollar totals; their tokens remain visible. Prices were reviewed on **2026-10-04**, with sources and assumptions available in the window. The app does not silently substitute a price for an unknown model.
+
+Expand **Compare this month with a subscription** and enter your monthly price in USD to compare this month's recorded API equivalent with that amount. The comparison uses all models for the current calendar month, independently of the table filters. It compares month-to-date usage with the full monthly price and does not value other subscription benefits. Missing prices make the comparison partial.
 
 Session-log formats can change with Codex updates. These are recorded local counts, not a complete account usage or billing report. The allowance display uses the documented [`account/rateLimits/read` app-server method](https://learn.chatgpt.com/docs/app-server).
 
@@ -88,12 +99,13 @@ Click **Enable Accessibility**, then enable **Codex Usage** under **System Setti
 
 ## Privacy and development
 
-The local Codex CLI handles its own authentication and network access for allowance checks. The token reader stores timestamps, numeric counters, and source-file metadata; it does not store prompts, replies, or credentials in its daily log. Automation settings stay in `UserDefaults`. The app has no analytics or telemetry.
+The local Codex CLI handles its own authentication and network access for allowance checks. The token reader stores timestamps, model identifiers, numeric counters, and source-file metadata; it does not store prompts, replies, or credentials in its daily log. Pricing is a bundled local catalog; viewing estimates requires no API key or new network request. Automation settings and the optional subscription price stay in `UserDefaults`. The app has no analytics or telemetry.
 
 To inspect the interface in a regular development window:
 
 ```sh
 open -n "build/Codex Usage.app" --args --preview
+open -n "build/Codex Usage.app" --args --preview-log
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for validation notes. The project is available under the [MIT License](LICENSE).
