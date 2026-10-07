@@ -2,7 +2,7 @@
 
 <img src="assets/icon.png" alt="Codex Usage Menu icon" width="96">
 
-A standalone macOS menu bar app for checking your **Codex allowance**, logging **daily local token usage**, and optionally automating mouse clicks or key presses.
+A standalone macOS menu bar app for checking your **Codex allowance and account token activity**, exploring **local token usage by model**, and optionally automating mouse clicks or key presses.
 
 This is an independent community project, not an official OpenAI app. It can run alongside iStat Menus and does not manage other menu bar icons.
 
@@ -13,11 +13,12 @@ This is an independent community project, not an official OpenAI app. It can run
 | Feature | Codex | Claude Code / Claude app |
 | --- | --- | --- |
 | Remaining allowance and reset times | Signed-in Codex account | Not supported |
-| Daily tokens, full history, model breakdown, CSV | Local Codex session records | Not supported |
-| API cost and cache-savings estimates | Models with reviewed OpenAI prices | Not supported |
+| Account token totals, daily activity, CSV | Signed-in Codex account activity service | Not supported |
+| Local model breakdown, token history, CSV | Local Codex session records on this Mac | Not supported |
+| API cost and cache-savings estimates | Local models with reviewed OpenAI prices | Not supported |
 | Optional mouse clicks / keyboard presses | General macOS input | Can target the focused app; live Claude input is not verified |
 
-The app invokes `codex app-server`, reads local Codex session records, and uses an OpenAI pricing catalog. Installing Claude alongside Codex does not make Claude sessions appear in this app. Regular ChatGPT and Claude web/desktop conversations are not indexed.
+The app invokes `codex app-server` for account allowance and token activity, reads local Codex session records for model details, and uses an OpenAI pricing catalog. Account totals cover the activity reported by that service; the app does not claim coverage of all ordinary ChatGPT conversations. Installing Claude alongside Codex does not make Claude sessions appear in this app.
 
 Claude Code integration is possible, but requires its own usage reader and Anthropic pricing. Claude records input, output, cache reads, and cache creation differently from Codex, so reusing the Codex calculation would give incorrect totals. See [Claude Code usage monitoring](https://code.claude.com/docs/en/monitoring-usage) and [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pricing). Claude account allowance would need a separate integration as well.
 
@@ -26,17 +27,17 @@ Claude Code integration is possible, but requires its own usage reader and Anthr
 The existing gauge icon shows the lowest remaining percentage among the Codex allowance windows returned for your signed-in account. Click it for three compact tabs:
 
 - **Allowance:** remaining usage and reset time for each available window.
-- **Daily tokens:** today's recorded input, output, cached-input, and reasoning-output counts, plus the last seven recorded days. **Open full log** opens the complete history in a separate window.
+- **Tokens:** lifetime and peak daily account totals, plus the latest seven days reported by the account service. **Open full log** opens account daily history; choose **Local models** there for input, output, cached-input, reasoning, and cost estimates from this Mac.
 - **Auto input:** choose **Mouse** or **Keyboard**. Only the selected tool's controls appear; delay and repeat count are tucked into an expandable section.
 
-The app refreshes allowance and token records on launch, every two minutes, and when you click refresh. The clicker and keyboard presser share an activity indicator and never run together.
+The app refreshes allowance, account token activity, and local records on launch, every two minutes, and when you click refresh. The clicker and keyboard presser share an activity indicator and never run together.
 
 ## Requirements
 
 - The app declares macOS 13 as its minimum. The current build has been tested on **macOS 27 with Apple Silicon**; older macOS versions and Intel Macs have not been verified. Source builds use the local compiler's default target and architecture.
 - Xcode Command Line Tools for a source build (`swiftc`, `iconutil`, and `codesign`).
-- A recent [Codex CLI](https://learn.chatgpt.com/docs/codex/cli), signed in with a ChatGPT-backed account, for the allowance display. API-key-only authentication does not provide this account allowance.
-- Local Codex session records for the daily token counter.
+- A recent [Codex CLI](https://learn.chatgpt.com/docs/codex/cli), signed in with the same ChatGPT account you use in your profile, for account allowance and tokens. Account token reads were verified with CLI **0.153.4**; older versions may need an update. API-key-only authentication does not provide account allowance or profile token activity.
+- Local Codex session records for the optional **Local models** view.
 - Accessibility permission for optional mouse and keyboard automation.
 
 ## Build and run
@@ -78,13 +79,17 @@ Click the gauge in the menu bar and select **Allowance**. Each row shows the ret
 
 ### 2. Open the token history
 
-Select **Daily tokens** for today's recorded counts and recent days. Cached input is part of input, and reasoning is part of output. Click **Open full log** to open the larger history window.
+Select **Tokens** for **Lifetime tokens**, **Peak daily tokens**, and recent account activity. These values come from the signed-in account service instead of adding up files on this Mac. Click **Open full log** for the larger history window.
 
-<img src="assets/tutorial/daily-tokens.png" alt="Daily tokens tutorial showing example counts and the Open full log button" width="390">
+<img src="assets/tutorial/daily-tokens.png" alt="Account tokens tutorial showing example lifetime and peak daily totals, recent activity, and Open full log" width="390">
 
-### 3. Compare models and export the log
+### 3. Browse account activity or local models
 
-In the full log:
+The full log opens with **Account** selected. Choose a period and click **Export CSV** to save the account's daily rows. **Latest day**, **Latest month**, and **Last 7 reported days** use the latest returned account day as their reference, which can lag behind today. Dates stay as the service reports them.
+
+<img src="assets/tutorial/account-full-log.png" alt="Account full log tutorial showing reported daily tokens, account totals, period filters, and Export CSV" width="1140">
+
+Choose **Local models** for the separate history recorded on this Mac:
 
 1. Choose **Period**: All history, This month, Last 7 days, or Today.
 2. Use **By model** for model totals or **Daily history** for day/model rows.
@@ -92,7 +97,7 @@ In the full log:
 4. Read **API estimate** and **Cache savings**. **Unpriced** means a verified price is unavailable; those tokens are kept in the totals but excluded from dollar estimates.
 5. Click **Export CSV**, choose a location, and save. The CSV exports the filtered **daily model rows**, even while the table shows model totals. Unknown dollar amounts are left blank.
 
-<img src="assets/tutorial/full-log.png" alt="Full usage log tutorial with model totals, period and model filters, API estimates, cache savings, and Export CSV" width="1140">
+<img src="assets/tutorial/full-log.png" alt="Local models tutorial with model totals, period and model filters, API estimates, cache savings, and Export CSV" width="1140">
 
 Expand **Estimate assumptions** for the pricing source and review date. **Reveal JSON log** in the footer opens the local numeric history in Finder. Expand **Compare this month with a subscription** and enter your monthly price in USD for a hypothetical comparison; it always uses this month's usage across all models, independently of the table filters.
 
@@ -111,18 +116,28 @@ For verification without posting mouse or keyboard input:
 ```sh
 "build/Codex Usage.app/Contents/MacOS/CodexUsageMenu" --check
 "build/Codex Usage.app/Contents/MacOS/CodexUsageMenu" --check-input
+"build/Codex Usage.app/Contents/MacOS/CodexUsageMenu" --check-account-parser
+"build/Codex Usage.app/Contents/MacOS/CodexUsageMenu" --check-account-tokens
 "build/Codex Usage.app/Contents/MacOS/CodexUsageMenu" --check-token-parser
 "build/Codex Usage.app/Contents/MacOS/CodexUsageMenu" --check-token-costs
 "build/Codex Usage.app/Contents/MacOS/CodexUsageMenu" --check-tokens
 ```
 
-`--check` reads the current allowance. `--check-input` validates automation settings and constructs events without sending them. `--check-token-parser` and `--check-token-costs` use synthetic fixtures. `--check-tokens` reads your real local token records and saves the daily log.
+`--check` reads the current allowance. `--check-account-tokens` reads live account token activity. `--check-input` validates automation settings and constructs events without sending them. `--check-account-parser`, `--check-token-parser`, and `--check-token-costs` use synthetic fixtures. `--check-tokens` reads your real local token records and saves the daily log.
 
-## Daily token records
+## Account tokens and profile differences
+
+Version **1.4.0** uses [`account/usage/read`](https://learn.chatgpt.com/docs/app-server) for the main **Tokens** tab and the full log's **Account** source. It displays the returned lifetime total, peak daily total, and daily activity buckets. The service supplies no model, input/output, or cache breakdown here, so account data has no cost estimate. Its CSV contains reported dates and token counts.
+
+Earlier versions displayed **local session tokens**. Those totals can differ from your profile: they cover files on this Mac, can include history from other logins, and use your Mac's calendar days. They are not an account-wide total. The new account view keeps the service's date labels without converting them into your Mac's time zone; the **Local models** view retains the previous local history.
+
+Sign the Codex CLI into the **same ChatGPT account** as your profile. Server aggregation can be delayed, and absent fields appear as **Unavailable**, never zero. A failed refresh shows its error and the last fetched account values, if available. Local totals are never substituted for account values. Account tokens and allowance percentages remain different measurements; tokens do not determine your remaining percentage.
+
+## Local token records
 
 The counter reads numeric `token_count` events from local Codex JSONL records under `~/.codex/sessions` and `~/.codex/archived_sessions`, or those folders inside `CODEX_HOME` when set. It groups token increases by calendar day in your Mac's current time zone. Duplicate records, resumed sessions, archived copies, and copied fork history are reconciled before aggregation.
 
-**Coverage is local Codex records on this Mac.** This does not include ordinary ChatGPT conversations, Claude sessions, other devices, sessions without token records, or account-wide API billing. The allowance percentage and token count measure different things; the app does not infer allowance percentages or actual bills from token counts.
+**Coverage is local Codex records on this Mac, potentially from more than one login.** This does not include ordinary ChatGPT conversations, Claude sessions, other devices, sessions without token records, or account-wide API billing. The app does not infer allowance percentages or actual bills from local token counts.
 
 Cached input is already included in input tokens, and reasoning output is already included in output tokens. They are displayed as breakdowns, not added again to the total. Missing or unreadable sources are reported. The app keeps the last known records if a source becomes unavailable.
 
@@ -132,11 +147,11 @@ The local log and incremental index are saved in:
 ~/Library/Application Support/Codex Usage/daily-token-usage.json
 ```
 
-Use **Open full log** in the Daily tokens tab, then **Reveal JSON log** to find this file. The first scan can take time for large histories; subsequent refreshes read changed files. Existing logs are backfilled when the app starts, so it does not need to run all day. Retained numeric records preserve daily history if source files are later removed. Time-zone changes regroup the saved records.
+Use **Open full log** in the Tokens tab, select **Local models**, then **Reveal JSON log** to find this file. The first scan can take time for large histories; subsequent refreshes read changed files. Existing logs are backfilled when the app starts, so it does not need to run all day. Retained numeric records preserve daily history if source files are later removed. Time-zone changes regroup the saved records.
 
 ### Full usage log and cost estimates
 
-The full log shows all recorded history **by model** or **by day and model**. Filter by period and model, or export the selected daily rows to CSV. Model identifiers come from recorded session/turn context; missing or ambiguous attribution appears as **Unknown model**. Updating from the earlier token logger rescans available sources once to add model names and retains numeric history from missing sources.
+The full log's **Local models** source shows recorded history **by model** or **by day and model**. Filter by period and model, or export the selected daily model rows to CSV. Model identifiers come from recorded session/turn context; missing or ambiguous attribution appears as **Unknown model**. Updating from the earlier token logger rescans available sources once to add model names and retains numeric history from missing sources.
 
 **Estimated API equivalent** compares recorded tokens with reviewed, current Standard API short-context USD prices. It applies the input rate to uncached input, the cached-input rate to cached input, and the output rate to output. Reasoning is included in output. **Estimated cache savings** shows the cache-read discount compared with charging cached input at the uncached rate.
 
@@ -148,7 +163,7 @@ API estimate = ((input − cached input) × input rate
               + output × output rate) / 1,000,000
 ```
 
-These are approximate comparisons, not your Codex bill, historical spend, or confirmed money saved. Local records do not identify cache writes, context-length premiums, service tiers, regional premiums, or tool fees. Cache savings exclude cache-write premiums. Models without a verified published price remain **Unpriced** and are excluded from dollar totals; their tokens remain visible. Prices were reviewed on **2026-10-04**, with sources and assumptions available in the window. The app does not silently substitute a price for an unknown model.
+These are approximate comparisons, not your Codex bill, historical spend, or confirmed money saved. Estimates do not include cache-write charges, context-length premiums, service tiers, regional premiums, or tool fees. Cache savings exclude cache-write premiums. Models without a verified published price remain **Unpriced** and are excluded from dollar totals; their tokens remain visible. Prices were reviewed on **2026-10-04**, with sources and assumptions available in the window. The app does not silently substitute a price for an unknown model.
 
 Expand **Compare this month with a subscription** and enter your monthly price in USD to compare this month's recorded API equivalent with that amount. The comparison uses all models for the current calendar month, independently of the table filters. It compares month-to-date usage with the full monthly price and does not value other subscription benefits. Missing prices make the comparison partial.
 
@@ -172,13 +187,14 @@ Click **Enable Accessibility**, then enable **Codex Usage** under **System Setti
 | Codex CLI was not found | Confirm `codex --version` works in Terminal. The app searches `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, and its `PATH`. |
 | No allowance appears | Sign in to Codex with ChatGPT, then refresh. Missing data is not treated as zero allowance. |
 | Menu bar icon is missing | On macOS 27, run from `/Applications` and check **System Settings → Menu Bar → Allow in the Menu Bar → Codex Usage**. If using a menu bar manager, put Codex Usage in its Visible section. Avoid running multiple copies. |
-| Daily tokens are missing or partial | Check the source-coverage message. Only local sessions that record numeric token events can be counted. |
+| Account tokens fail to load or differ from your profile | Update the Codex CLI, sign in to the same ChatGPT account as your profile, and refresh. Check the last fetched time; server activity can be delayed or unavailable. |
+| Local models are missing or partial | Check the source-coverage message. Only local sessions that record numeric token events can be counted. Local totals can span other logins and do not equal profile totals. |
 | Automation does not start | Grant Accessibility to Codex Usage, reopen its menu, and try again. |
 | Stop shortcut does not work | Reopen the menu to stop. Check Input Monitoring if the global shortcut is unavailable. |
 
 ## Privacy and development
 
-The local Codex CLI handles its own authentication and network access for allowance checks. The token reader stores timestamps, model identifiers, numeric counters, and source-file metadata; it does not store prompts, replies, or credentials in its daily log. Pricing is a bundled local catalog; viewing estimates requires no API key or new network request. Automation settings and the optional subscription price stay in `UserDefaults`. The app has no analytics or telemetry.
+The local Codex CLI handles its own authentication and network access for allowance and account token checks. The local token reader stores timestamps, model identifiers, numeric counters, and source-file metadata; it does not store prompts, replies, or credentials in its daily log. Pricing is a bundled local catalog; viewing local estimates requires no API key or new network request. Automation settings and the optional subscription price stay in `UserDefaults`. The app has no analytics or telemetry.
 
 To inspect the interface in a regular development window:
 

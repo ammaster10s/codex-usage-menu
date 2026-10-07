@@ -36,7 +36,7 @@ private enum UsageError: LocalizedError {
 }
 
 private enum UsageFetcher {
-    static func fetch() throws -> UsageSnapshot {
+    private static func request(_ method: String) throws -> [String: Any] {
         let process = Process()
         process.executableURL = try codexExecutable()
         process.arguments = ["app-server"]
@@ -93,14 +93,21 @@ private enum UsageFetcher {
             "params": ["clientInfo": [
                 "name": "codex_usage_menu",
                 "title": "Codex Usage Menu",
-                "version": "1.3.0"
+                "version": "1.4.0"
             ]]
         ])
         _ = try response(for: 1)
         try send(["method": "initialized"])
-        try send(["method": "account/rateLimits/read", "id": 2])
-        let result = try response(for: 2)
+        try send(["method": method, "id": 2])
+        return try response(for: 2)
+    }
 
+    static func fetchAccountTokens() throws -> AccountTokenUsageSnapshot {
+        try AccountTokenUsageSnapshot.parse(request("account/usage/read"))
+    }
+
+    static func fetch() throws -> UsageSnapshot {
+        let result = try request("account/rateLimits/read")
         let buckets = result["rateLimitsByLimitId"] as? [String: Any]
         let codex = (buckets?["codex"] as? [String: Any])
             ?? (result["rateLimits"] as? [String: Any])
@@ -266,6 +273,9 @@ private struct WindowRow: View {
 }
 
 final class TokenUsageModel: ObservableObject {
+    @Published var accountSnapshot: AccountTokenUsageSnapshot?
+    @Published var accountError: String?
+    @Published var accountRefreshing = false
     @Published var snapshot: DailyTokenUsageSnapshot?
     @Published var error: String?
     @Published var refreshing = false
@@ -273,7 +283,7 @@ final class TokenUsageModel: ObservableObject {
 
 private enum PopoverPage: String, CaseIterable {
     case allowance = "Allowance"
-    case tokens = "Daily tokens"
+    case tokens = "Tokens"
     case input = "Auto input"
 }
 
@@ -322,7 +332,7 @@ private struct UsagePopover: View {
             case .allowance:
                 allowance
             case .tokens:
-                DailyTokensPanel(model: tokens, openFullLog: openFullLog)
+                AccountTokensPanel(model: tokens, openFullLog: openFullLog)
             case .input:
                 AutoInputPanel(autoClick: autoClick, autoPress: autoPress,
                                startClicking: startClicking, startPressing: startPressing)
@@ -333,7 +343,7 @@ private struct UsagePopover: View {
                     .font(.system(size: 11))
                     .foregroundStyle(Palette.secondary)
                 Spacer()
-                if model.refreshing || tokens.refreshing {
+                if model.refreshing || tokens.refreshing || tokens.accountRefreshing {
                     ProgressView().controlSize(.small)
                         .frame(width: 24, height: 24)
                 }
@@ -341,8 +351,8 @@ private struct UsagePopover: View {
                     Image(systemName: "arrow.clockwise")
                         .frame(width: 24, height: 24)
                 }
-                .disabled(page == .tokens ? tokens.refreshing : model.refreshing)
-                .help("Refresh usage and daily tokens")
+                .disabled(page == .tokens ? tokens.accountRefreshing : model.refreshing)
+                .help("Refresh allowance and token usage")
                 .accessibilityLabel("Refresh usage")
                 Button(action: quit) {
                     Image(systemName: "power").frame(width: 24, height: 24)
@@ -359,7 +369,7 @@ private struct UsagePopover: View {
     }
 
     private var updatedText: String {
-        let date = page == .tokens ? tokens.snapshot?.checkedAt : model.snapshot?.checkedAt
+        let date = page == .tokens ? tokens.accountSnapshot?.checkedAt : model.snapshot?.checkedAt
         return date.map { "Updated " + $0.formatted(date: .omitted, time: .shortened) } ?? "Codex usage"
     }
 
@@ -378,7 +388,7 @@ private struct UsagePopover: View {
                     }
                 }
             }
-            Text("Your signed-in Codex account. Daily token records are in the next tab.")
+            Text("Your signed-in Codex account. Profile token activity is in the next tab.")
                 .font(.system(size: 11))
                 .foregroundStyle(Palette.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -393,101 +403,73 @@ private struct UsagePopover: View {
     }
 }
 
-private struct DailyTokensPanel: View {
+private struct AccountTokensPanel: View {
     @ObservedObject var model: TokenUsageModel
     let openFullLog: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let error = model.error {
-                Text("Token refresh failed: \(error)")
+            Text("Account token activity").font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white)
+            if let error = model.accountError {
+                Text("Account refresh failed: \(error)")
                     .font(.system(size: 12))
                     .foregroundStyle(Color(red: 1, green: 0.75, blue: 0.72))
                     .fixedSize(horizontal: false, vertical: true)
+                Text("Use a recent Codex CLI signed in to the same ChatGPT account as Profile.")
+                    .font(.system(size: 11)).foregroundStyle(Palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            if let snapshot = model.snapshot {
-                let today = snapshot.days.first { $0.date == todayKey }
-                HStack {
-                    Text(model.error == nil ? "Recorded today" : "Last recorded").font(.system(size: 14, weight: .semibold))
-                    Spacer()
-                    Text("\((today?.totalTokens ?? 0).formatted()) tokens")
-                        .font(.system(size: 15, weight: .semibold))
-                        .monospacedDigit()
+            if let snapshot = model.accountSnapshot {
+                if model.accountError != nil {
+                    Text("Last fetched account values").font(.system(size: 11))
+                        .foregroundStyle(Palette.secondary)
                 }
-                .foregroundStyle(.white)
-                Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
-                    GridRow {
-                        metric("Input", today?.inputTokens ?? 0)
-                        metric("Output", today?.outputTokens ?? 0)
-                    }
-                    GridRow {
-                        metric("Cached input", today?.cachedInputTokens ?? 0)
-                        metric("Reasoning output", today?.reasoningOutputTokens ?? 0)
-                    }
-                }
-                Text("Cached and reasoning tokens are included in input and output.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Palette.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if !snapshot.days.isEmpty {
+                metric("Lifetime tokens", snapshot.lifetimeTokens)
+                metric("Peak daily tokens", snapshot.peakDailyTokens)
+                if let days = snapshot.days {
                     Divider().overlay(Palette.track)
-                    Text("Recent days").font(.system(size: 12, weight: .semibold))
+                    Text("Recent account days").font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.white)
-                    ForEach(Array(snapshot.days.prefix(7)), id: \.date) { day in
+                    ForEach(Array(days.prefix(7)), id: \.startDate) { day in
                         HStack {
-                            Text(day.date)
+                            Text(day.startDate)
                             Spacer()
-                            Text(day.totalTokens.formatted()).monospacedDigit()
+                            Text(day.tokens.formatted()).monospacedDigit()
                         }
-                        .font(.system(size: 12))
-                        .foregroundStyle(Palette.secondary)
+                        .font(.system(size: 12)).foregroundStyle(Palette.secondary)
                     }
+                    if days.isEmpty { note("No daily activity returned by the account service.") }
                 } else {
-                    Text("No token records yet. Use Codex on this Mac, then refresh.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Palette.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    note("Daily account activity is unavailable.")
                 }
-                Text(snapshot.coverageSummary)
-                    .font(.system(size: 11))
-                    .foregroundStyle(snapshot.hasCoverageWarning
-                                     ? Color(red: 1, green: 0.75, blue: 0.72) : Palette.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button("Open full log", action: openFullLog)
-                .font(.system(size: 11, weight: .medium))
-                .buttonStyle(.plain)
-                .foregroundStyle(Palette.highlight)
-            } else if model.error == nil {
+            } else if model.accountError == nil {
                 HStack(spacing: 10) {
                     ProgressView().controlSize(.small)
-                    Text("Indexing local Codex token records…")
+                    Text("Fetching account token activity…")
                 }
-                .font(.system(size: 12))
-                .foregroundStyle(Palette.secondary)
+                .font(.system(size: 12)).foregroundStyle(Palette.secondary)
             }
-            Text("Local Codex sessions on this Mac. ChatGPT chats, other devices, and API billing are not included.")
-                .font(.system(size: 11))
-                .foregroundStyle(Palette.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            Button("Open full log", action: openFullLog)
+                .font(.system(size: 11, weight: .medium))
+                .buttonStyle(.plain).foregroundStyle(Palette.highlight)
+            note("From the signed-in account’s token-activity service used by Profile. Dates are returned by the service; updates may be delayed. Local model and cost details are available in the full log.")
         }
     }
 
-    private var todayKey: String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.timeZone = .autoupdatingCurrent
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: Date())
+    private func note(_ text: String) -> some View {
+        Text(text).font(.system(size: 11)).foregroundStyle(Palette.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
-    private func metric(_ label: String, _ count: Int64) -> some View {
+    private func metric(_ label: String, _ count: Int64?) -> some View {
         HStack(spacing: 8) {
             Text(label).foregroundStyle(Palette.secondary)
             Spacer(minLength: 4)
-            Text(count.formatted()).foregroundStyle(.white).monospacedDigit()
+            Text(count.map { $0.formatted() } ?? "Unavailable")
+                .foregroundStyle(.white).monospacedDigit()
         }
-        .font(.system(size: 11))
+        .font(.system(size: 13))
     }
 }
 
@@ -730,7 +712,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             window.minSize = NSSize(width: 980, height: 580)
             window.isReleasedWhenClosed = false
             window.contentView = NSHostingView(rootView: TokenUsageLogView(
-                model: tokens, refresh: { [weak self] in self?.refreshTokens() }
+                model: tokens, refresh: { [weak self] in self?.refreshTokens(); self?.refreshAccountTokens() }
             ))
             window.center()
             tokenLogWindow = window
@@ -770,6 +752,25 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         if autoPress.start() { popover.performClose(nil) }
     }
 
+    private func refreshAccountTokens() {
+        guard !tokens.accountRefreshing else { return }
+        tokens.accountRefreshing = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let result = Result { try UsageFetcher.fetchAccountTokens() }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.tokens.accountRefreshing = false
+                switch result {
+                case .success(let snapshot):
+                    self.tokens.accountSnapshot = snapshot
+                    self.tokens.accountError = nil
+                case .failure(let error):
+                    self.tokens.accountError = error.localizedDescription
+                }
+            }
+        }
+    }
+
     private func refreshTokens() {
         guard !tokens.refreshing else { return }
         tokens.refreshing = true
@@ -790,6 +791,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refresh() {
+        refreshAccountTokens()
         refreshTokens()
         guard !model.refreshing else { return }
         model.refreshing = true
@@ -826,6 +828,28 @@ private enum CodexUsageMenu {
 
     static func main() {
         signal(SIGPIPE, SIG_IGN)
+        if CommandLine.arguments.contains("--check-account-parser") {
+            let failures = AccountTokenUsageSnapshot.selfCheck()
+            for failure in failures { fputs("\(failure)\n", stderr) }
+            guard failures.isEmpty else { exit(1) }
+            print("Account token parser checks passed")
+            return
+        }
+        if CommandLine.arguments.contains("--check-account-tokens") {
+            do {
+                let snapshot = try UsageFetcher.fetchAccountTokens()
+                print("Lifetime tokens: \(snapshot.lifetimeTokens.map { String($0) } ?? "unavailable")")
+                print("Peak daily tokens: \(snapshot.peakDailyTokens.map { String($0) } ?? "unavailable")")
+                for day in (snapshot.days ?? []).prefix(7) {
+                    print("\(day.startDate): \(day.tokens) tokens")
+                }
+                if snapshot.days == nil { print("Daily account activity unavailable") }
+            } catch {
+                fputs("\(error.localizedDescription)\n", stderr)
+                exit(1)
+            }
+            return
+        }
         if CommandLine.arguments.contains("--check-token-costs") {
             let failures = TokenCostCatalog.selfCheck() + TokenUsageLogReport.selfCheck()
             for failure in failures { fputs("\(failure)\n", stderr) }

@@ -12,7 +12,10 @@ awk '/^@main$/ { exit } { print }' "$project_dir/CodexUsageMenu.swift" \
         -e 's/var mode: AutoInputMode = .mouse/var mode: AutoInputMode = .keyboard/' \
         -e 's/var showOptions = false/var showOptions = true/' \
   > "$render_dir/Tutorial.swift"
-cat "$project_dir/TokenUsageLog.swift" >> "$render_dir/Tutorial.swift"
+sed -e 's/@State private var /@State var /g' \
+    -e 's/^private enum UsageLog/enum UsageLog/' \
+    -e 's/^fileprivate enum UsageLog/enum UsageLog/' \
+  "$project_dir/TokenUsageLog.swift" >> "$render_dir/Tutorial.swift"
 cat "$project_dir/scripts/TutorialRenderer.swift" >> "$render_dir/Tutorial.swift"
 
 xcrun swiftc -O -parse-as-library \
@@ -21,6 +24,7 @@ xcrun swiftc -O -parse-as-library \
   "$project_dir/AutoClickController.swift" \
   "$project_dir/AutoPressController.swift" \
   "$project_dir/DailyTokenUsage.swift" \
+  "$project_dir/AccountTokenUsage.swift" \
   "$project_dir/TokenCostEstimate.swift" \
   -o "$render_dir/render-tutorial"
 "$render_dir/render-tutorial" "$project_dir"

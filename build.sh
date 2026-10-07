@@ -25,6 +25,7 @@ xcrun swiftc -O -parse-as-library \
   "$project_dir/AutoClickController.swift" \
   "$project_dir/AutoPressController.swift" \
   "$project_dir/DailyTokenUsage.swift" \
+  "$project_dir/AccountTokenUsage.swift" \
   "$project_dir/TokenCostEstimate.swift" \
   "$project_dir/TokenUsageLog.swift" \
   -o "$contents_dir/MacOS/CodexUsageMenu"

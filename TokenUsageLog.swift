@@ -32,6 +32,35 @@ enum TokenUsageLogReport {
         return ([header] + lines).joined(separator: "\r\n") + "\r\n"
     }
 
+    static func accountCSV(_ rows: [AccountTokenDay]) -> String {
+        let lines = rows.sorted { $0.startDate > $1.startDate }.map {
+            ["codex_account", $0.startDate, String($0.tokens)].map(csvField).joined(separator: ",")
+        }
+        return (["source,server_day,tokens"] + lines).joined(separator: "\r\n") + "\r\n"
+    }
+
+    fileprivate static func accountDays(_ days: [AccountTokenDay], period: UsageLogPeriod) -> [AccountTokenDay] {
+        guard let latest = days.map(\.startDate).max() else { return [] }
+        let lowerBound: String?
+        switch period {
+        case .all: lowerBound = nil
+        case .today: lowerBound = latest
+        case .month: lowerBound = String(latest.prefix(7)) + "-01"
+        case .week:
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.calendar = Calendar(identifier: .gregorian)
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            formatter.dateFormat = "yyyy-MM-dd"
+            guard let lastDay = formatter.date(from: latest) else { return [] }
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+            guard let firstDay = calendar.date(byAdding: .day, value: -6, to: lastDay) else { return [] }
+            lowerBound = formatter.string(from: firstDay)
+        }
+        return days.filter { lowerBound == nil || $0.startDate >= lowerBound! }
+    }
+
     private static func csvField(_ value: String) -> String {
         // Quoting alone does not stop spreadsheet formula interpretation.
         let safe = value.first.map { "=+-@\t\r\n".contains($0) } == true ? "'" + value : value
@@ -59,11 +88,21 @@ enum TokenUsageLogReport {
         if !export.contains("\"10\",\"\",\"\"") {
             failures.append("Unpriced CSV rows must have empty cost fields")
         }
+        if accountCSV([AccountTokenDay(startDate: "2026-10-07", tokens: 42)]) !=
+            "source,server_day,tokens\r\n\"codex_account\",\"2026-10-07\",\"42\"\r\n" {
+            failures.append("Account CSV must preserve server days and distinguish its source")
+        }
+        let days = ["2026-10-01", "2026-09-30", "2026-09-25", "2026-09-24"].map { AccountTokenDay(startDate: $0, tokens: 1) }
+        if accountDays(days, period: .all).count != 4 || accountDays(days, period: .month).count != 1 ||
+            accountDays(days, period: .week).count != 3 || accountDays(days, period: .today).first?.startDate != "2026-10-01" ||
+            !accountDays([], period: .today).isEmpty {
+            failures.append("Account period filters must use server labels and the latest reported day")
+        }
         return failures
     }
 }
 
-private enum UsageLogPeriod: String, CaseIterable {
+fileprivate enum UsageLogPeriod: String, CaseIterable {
     case all = "All history"
     case month = "This month"
     case week = "Last 7 days"
@@ -73,6 +112,11 @@ private enum UsageLogPeriod: String, CaseIterable {
 private enum UsageLogGrouping: String, CaseIterable {
     case models = "By model"
     case days = "Daily history"
+}
+
+private enum UsageLogSource: String, CaseIterable {
+    case account = "Account"
+    case local = "Local models"
 }
 
 private struct UsageLogRow: Identifiable {
@@ -87,6 +131,7 @@ private struct UsageLogRow: Identifiable {
 struct TokenUsageLogView: View {
     @ObservedObject var model: TokenUsageModel
     let refresh: () -> Void
+    @State private var source: UsageLogSource = .account
     @State private var period: UsageLogPeriod = .all
     @State private var grouping: UsageLogGrouping = .models
     @State private var selectedModel = ""
@@ -97,6 +142,10 @@ struct TokenUsageLogView: View {
 
     private var availableModels: [String] {
         Array(Set(model.snapshot?.modelDays.map(\.model) ?? [])).sorted()
+    }
+
+    private var accountDays: [AccountTokenDay] {
+        TokenUsageLogReport.accountDays(model.accountSnapshot?.days ?? [], period: period)
     }
 
     private var filtered: [DailyTokenModelDay] {
@@ -124,8 +173,22 @@ struct TokenUsageLogView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             header
-            if let error = model.error { warning("Refresh failed: \(error). Showing last recorded usage.") }
+            Picker("Usage source", selection: $source) {
+                ForEach(UsageLogSource.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden().frame(width: 240)
+            .accessibilityLabel("Usage source")
             if let error = exportError { warning("CSV export failed: \(error)") }
+            if source == .account { accountHistory } else { localHistory }
+        }
+        .padding(24)
+        .foregroundStyle(.white)
+        .background(Palette.background)
+        .frame(minWidth: 940, minHeight: 540)
+    }
+
+    @ViewBuilder private var localHistory: some View {
+            if let error = model.error { warning("Refresh failed: \(error). Showing last recorded usage.") }
             if let snapshot = model.snapshot {
                 totals
                 HStack(spacing: 14) {
@@ -180,28 +243,79 @@ struct TokenUsageLogView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+    }
+
+    @ViewBuilder private var accountHistory: some View {
+        if let error = model.accountError {
+            warning("Account refresh failed: \(error).\(model.accountSnapshot == nil ? "" : " Showing the last account response.")")
         }
-        .padding(24)
-        .foregroundStyle(.white)
-        .background(Palette.background)
-        .frame(minWidth: 940, minHeight: 540)
+        if let snapshot = model.accountSnapshot {
+            HStack(alignment: .firstTextBaseline, spacing: 32) {
+                total("Lifetime tokens", value: snapshot.lifetimeTokens?.formatted() ?? "Unavailable")
+                total("Peak daily tokens", value: snapshot.peakDailyTokens?.formatted() ?? "Unavailable")
+                Spacer()
+                if model.accountRefreshing { ProgressView().controlSize(.small) }
+            }
+            .padding(.vertical, 6)
+            if snapshot.days == nil {
+                emptyAccountHistory("Daily account history is unavailable")
+            } else if accountDays.isEmpty {
+                emptyAccountHistory("No daily account records in this selection")
+            } else {
+                Table(accountDays) {
+                    TableColumn("Server day") { day in Text(day.startDate) }.width(min: 180, ideal: 240)
+                    TableColumn("Tokens") { day in number(day.tokens) }
+                }
+                .font(.system(size: 13))
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("From your signed-in ChatGPT account. Per-model counts and costs are not provided; use Local models for estimates from this Mac.")
+                Text("Daily labels are returned by the server. Its timezone and history coverage are not specified. Period filters use the latest returned day; lifetime totals are independent of the selected days.")
+                Text("Updated " + snapshot.checkedAt.formatted(date: .omitted, time: .shortened))
+            }
+            .font(.system(size: 11)).foregroundStyle(Palette.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        } else {
+            VStack(spacing: 12) {
+                if model.accountRefreshing {
+                    ProgressView()
+                    Text("Reading account token activity…")
+                } else {
+                    Text("Account usage unavailable").font(.headline)
+                    Text("Update Codex CLI and sign in to the same ChatGPT account as your profile, then refresh.")
+                        .foregroundStyle(Palette.secondary)
+                    Button("Try again", action: refresh)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func emptyAccountHistory(_ message: String) -> some View {
+        VStack(spacing: 8) {
+            Text(message).font(.headline)
+            Text("Refresh or choose another period. Missing account data is not counted as zero.")
+                .foregroundStyle(Palette.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var header: some View {
         HStack(spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Usage log").font(.system(size: 24, weight: .semibold))
-                Text("Local Codex history · \(TimeZone.autoupdatingCurrent.identifier)")
+                Text(source == .account ? "ChatGPT account · server-reported days" : "Local Codex history · \(TimeZone.autoupdatingCurrent.identifier)")
                     .font(.system(size: 12)).foregroundStyle(Palette.secondary)
             }
             Spacer()
             Picker("Period", selection: $period) {
-                ForEach(UsageLogPeriod.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                ForEach(UsageLogPeriod.allCases, id: \.self) { Text(periodName($0)).tag($0) }
             }
             .frame(width: 190)
             Button(action: refresh) { Label("Refresh", systemImage: "arrow.clockwise") }
-                .disabled(model.refreshing)
-            Button("Export CSV", action: exportCSV).disabled(filtered.isEmpty)
+                .disabled(source == .account ? model.accountRefreshing : model.refreshing)
+            Button("Export CSV", action: exportCSV)
+                .disabled(source == .account ? accountDays.isEmpty : filtered.isEmpty)
         }
     }
 
@@ -310,16 +424,26 @@ struct TokenUsageLogView: View {
     }
 
     private func exportCSV() {
-        let exportedRows = filtered
+        let exportedCSV = source == .account ? TokenUsageLogReport.accountCSV(accountDays) : TokenUsageLogReport.csv(filtered)
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.commaSeparatedText]
-        panel.nameFieldStringValue = "codex-token-usage.csv"
+        panel.nameFieldStringValue = source == .account ? "codex-account-token-usage.csv" : "codex-local-model-usage.csv"
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
             do {
-                try TokenUsageLogReport.csv(exportedRows).write(to: url, atomically: true, encoding: .utf8)
+                try exportedCSV.write(to: url, atomically: true, encoding: .utf8)
                 exportError = nil
             } catch { exportError = error.localizedDescription }
+        }
+    }
+
+    private func periodName(_ period: UsageLogPeriod) -> String {
+        guard source == .account else { return period.rawValue }
+        switch period {
+        case .all: return "All reported days"
+        case .month: return "Latest month"
+        case .week: return "Last 7 reported days"
+        case .today: return "Latest day"
         }
     }
 

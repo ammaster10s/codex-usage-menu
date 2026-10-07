@@ -53,6 +53,10 @@ private enum TutorialRenderer {
             unreadableFileCount: 0, skippedRecordCount: 0, retainedFileCount: 0, persistenceWarning: false,
             coverageSummary: "5 local session files", logURL: URL(fileURLWithPath: "/example/daily-token-usage.json"),
             modelDays: fixture)
+        tokens.accountSnapshot = AccountTokenUsageSnapshot(
+            lifetimeTokens: 42_000_000, peakDailyTokens: 6_250_000,
+            days: [AccountTokenDay(startDate: today, tokens: 2_100_000),
+                   AccountTokenDay(startDate: yesterday, tokens: 3_250_000)], checkedAt: timestamp)
         let clicker = AutoClickController()
         let presser = AutoPressController()
         // These defaults belong to this temporary renderer process, not the app.
@@ -67,8 +71,10 @@ private enum TutorialRenderer {
                        to: destination.appendingPathComponent(name + ".png"))
         }
         try render(labelled(TokenUsageLogView(model: tokens, refresh: {})), width: 1140, height: 760,
+                   to: destination.appendingPathComponent("account-full-log.png"))
+        try render(labelled(TokenUsageLogView(model: tokens, refresh: {}, source: .local)), width: 1140, height: 760,
                    to: destination.appendingPathComponent("full-log.png"))
-        print("Rendered four tutorial images with synthetic data")
+        print("Rendered five tutorial images with synthetic data")
     }
 
     private static func labelled<V: View>(_ view: V) -> some View {
